@@ -48,23 +48,28 @@ export function portableFetch(base: FetchImpl = nativeFetch): FetchImpl {
 			dispatchers.set(key, dispatcher);
 		}
 		const { proxy: _proxy, tls: _tls, timeout: _timeout, unix: _unix, ...standard } = options ?? {};
-		const request = {
+		const requestInit = {
 			...(input instanceof Request
 				? { method: input.method, headers: input.headers, body: input.body, signal: input.signal }
 				: {}),
 			...standard,
 			dispatcher,
 			duplex: "half",
-		} as Parameters<typeof undiciFetch>[1];
-		// The host's FormData has a different brand from bundled undici's. Passing
-		// it through directly sends "[object FormData]" as text/plain instead.
-		if (request?.body instanceof FormData && !(request.body instanceof UndiciFormData)) {
-			const form = new UndiciFormData();
-			request.body.forEach((value, name) => form.append(name, value));
-			request.body = form;
+		};
+		const requestUrl = input instanceof Request ? input.url : input.toString();
+		if (host.Bun) {
+			const request = requestInit as Parameters<typeof undiciFetch>[1];
+			// The host's FormData has a different brand from bundled undici's.
+			// Preserve multipart encoding on the Bun branch that uses undici.
+			if (request?.body instanceof FormData && !(request.body instanceof UndiciFormData)) {
+				const form = new UndiciFormData();
+				request.body.forEach((value, name) => form.append(name, value));
+				request.body = form;
+			}
+			const response = await undiciFetch(requestUrl, request);
+			return response as unknown as Response;
 		}
-		const response = await undiciFetch(input instanceof Request ? input.url : input.toString(), request);
-		// undici's web types are structurally identical to the host DOM response.
-		return response as unknown as Response;
+		// Preserve the host Response identity for consumers that use instanceof before caching.
+		return nativeFetch(requestUrl, requestInit as RequestInit);
 	};
 }

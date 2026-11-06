@@ -312,12 +312,27 @@ export function loadFastembed(): Promise<FastembedModule> {
 async function loadFastembedOnce(): Promise<FastembedModule> {
 	try {
 		const requireDirect = createRequire(import.meta.url);
-		const manifestPath = requireDirect.resolve("fastembed/package.json");
-		const manifest: { version?: unknown } = requireDirect(manifestPath);
-		if (manifest.version !== FASTEMBED_SPEC) {
-			throw new Error(`Cannot find package fastembed@${FASTEMBED_SPEC}; resolved ${String(manifest.version)}`);
+		const entry = requireDirect.resolve("fastembed");
+		let packageDir = path.dirname(entry);
+		// Metadata is not a public package export. Resolve the public entry first,
+		// then find its owning manifest, skipping nested module-format manifests.
+		while (true) {
+			const file = runtime.file(path.join(packageDir, "package.json"));
+			if (await file.exists()) {
+				const manifest: { name?: unknown; version?: unknown } = await file.json();
+				if (manifest.name === "fastembed") {
+					if (manifest.version !== FASTEMBED_SPEC) {
+						throw new Error(
+							`Cannot find package fastembed@${FASTEMBED_SPEC}; resolved ${String(manifest.version)}`,
+						);
+					}
+					return await loadResolvedFastembed(entry, packageDir);
+				}
+			}
+			const parent = path.dirname(packageDir);
+			if (parent === packageDir) throw new Error(`Cannot find package fastembed beside ${entry}`);
+			packageDir = parent;
 		}
-		return await loadResolvedFastembed(requireDirect.resolve("fastembed"), path.dirname(manifestPath));
 	} catch (error) {
 		if (!isRecoverableFastembedLoadError(error)) throw error;
 		logger.debug("mnemopi: fastembed not loadable, using on-demand runtime install", {
