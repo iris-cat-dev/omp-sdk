@@ -6,6 +6,7 @@ import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
+import { streamPiNative } from "@oh-my-pi/pi-ai/providers/pi-native-client";
 import { encodeStream, formatError, parseRequest } from "@oh-my-pi/pi-ai/providers/pi-native-server";
 import type {
 	AssistantMessage,
@@ -335,6 +336,140 @@ describe("pi-native gateway retry budgets", () => {
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("pi-native gateway Responses termination", () => {
+	it.each(["completed", "incomplete", "toolUse", "failed", "error"] as const)(
+		"finishes %s and closes native HTTP without upstream EOF",
+		async outcome => {
+			const usage = {
+				input_tokens: 7,
+				output_tokens: 3,
+				total_tokens: 10,
+				input_tokens_details: { cached_tokens: 2 },
+			};
+			const item =
+				outcome === "toolUse"
+					? { type: "function_call", id: "fc_1", call_id: "call_1", name: "read", arguments: '{"path":"a.txt"}' }
+					: {
+							type: "message",
+							id: "msg_1",
+							role: "assistant",
+							status: "completed",
+							content: [{ type: "output_text", text: "hello", annotations: [] }],
+						};
+			const status = outcome === "toolUse" ? "completed" : outcome;
+			const terminal =
+				outcome === "error"
+					? { type: "error", code: "invalid_request_error", message: "request rejected" }
+					: {
+							type: `response.${status}`,
+							response: {
+								id: "resp_terminal",
+								status,
+								usage,
+								...(outcome === "incomplete" && { incomplete_details: { reason: "max_output_tokens" } }),
+								...(outcome === "failed" && {
+									error: { code: "invalid_request_error", message: "request rejected" },
+								}),
+							},
+						};
+			const events = [
+				{ type: "response.created", response: { id: "resp_terminal", status: "in_progress" } },
+				{ type: "response.output_item.added", output_index: 0, item },
+				{ type: "response.output_item.done", output_index: 0, item },
+				terminal,
+			];
+			const bytes = new TextEncoder().encode(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
+			let upstreamRequests = 0;
+			const upstream = Bun.serve({
+				hostname: "127.0.0.1",
+				port: 0,
+				async fetch(req) {
+					await req.json();
+					upstreamRequests++;
+					return new Response(
+						new ReadableStream<Uint8Array>({
+							start(controller) {
+								controller.enqueue(bytes);
+								// Deliberately omit [DONE] and HTTP EOF after the terminal event.
+							},
+						}),
+						{ headers: { "Content-Type": "text/event-stream" } },
+					);
+				},
+			});
+			const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-pi-native-terminal-"));
+			const storage = await AuthStorage.create(path.join(dir, "auth.db"));
+			storage.keys.setRuntime("terminal-test", "test-key");
+			const model = buildModel({
+				id: "terminal",
+				name: "Terminal test",
+				api: "openai-responses",
+				provider: "terminal-test",
+				baseUrl: `http://127.0.0.1:${upstream.port}/v1`,
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 8192,
+				maxTokens: 2048,
+			});
+			const handle = await startAuthGateway({
+				bind: "127.0.0.1:0",
+				bearerTokens: ["test-token"],
+				storage,
+				resolveModel: () => model,
+				version: "test",
+			});
+			const controller = new AbortController();
+			try {
+				let wireFinished: Promise<string> | undefined;
+				const stream = streamPiNative({ ...model, transport: "pi-native", baseUrl: handle.url }, baseContext, {
+					apiKey: "test-token",
+					signal: controller.signal,
+					fetch: async (input, init) => {
+						const response = await fetch(input, init);
+						wireFinished = response.clone().text();
+						return response;
+					},
+				});
+				const seen: AssistantMessageEvent[] = [];
+				for await (const event of stream) seen.push(event);
+				const result = await stream.result();
+				const frames = (await wireFinished)?.split("\n\n").filter(frame => frame.startsWith("data: "));
+				expect(frames?.at(-1)).toBe("data: [DONE]");
+				expect(upstreamRequests).toBe(1);
+				const expectedStop =
+					outcome === "completed"
+						? "stop"
+						: outcome === "incomplete"
+							? "length"
+							: outcome === "toolUse"
+								? "toolUse"
+								: "error";
+				expect(result.stopReason).toBe(expectedStop);
+				expect(seen.at(-1)?.type).toBe(outcome === "failed" || outcome === "error" ? "error" : "done");
+				if (outcome === "toolUse") {
+					expect(result.content).toEqual([
+						expect.objectContaining({ type: "toolCall", name: "read", arguments: { path: "a.txt" } }),
+					]);
+				} else if (outcome === "completed" || outcome === "incomplete") {
+					expect(result.content).toEqual([expect.objectContaining({ type: "text", text: "hello" })]);
+				} else {
+					expect(result.errorMessage).toContain("request rejected");
+				}
+				if (outcome !== "error") {
+					expect(result.usage).toMatchObject({ input: 5, cacheRead: 2, output: 3, totalTokens: 10 });
+				}
+			} finally {
+				controller.abort();
+				await handle.close();
+				await upstream.stop(true);
+				storage.close();
+				await fs.rm(dir, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe("pi-native gateway reasoning flags", () => {
