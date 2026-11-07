@@ -14,6 +14,7 @@ import {
 	type ModelUsageHealth,
 	type ProviderSessionState,
 	type ToolCall,
+	shouldSendServiceTier,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
@@ -22,7 +23,8 @@ import { buildParams } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { fingerprintStaticModels } from "@oh-my-pi/pi-catalog/model-manager";
+import { getBundledModel, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -7720,6 +7722,153 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.id).toBe("deepseek-v4-tiered");
 		expect(session.model?.contextWindow).toBe(400_000);
 		expect(session.getContextUsage()?.contextWindow).toBe(400_000);
+	});
+
+	describe("same-selector service-tier discovery", () => {
+		function createTierDiscoverySession(
+			startupTiers: readonly string[] | undefined,
+			discoveredTiers: readonly string[] | undefined,
+			rebindModelAfterDiscovery = true,
+		) {
+			const settings = Settings.isolated({ "compaction.enabled": false });
+			const registry = new ModelRegistry(authStorage, path.join(tempDir.path(), "tier-discovery-models.json"));
+			const bundled = registry.find("openai-codex", "gpt-6-astra");
+			if (!bundled) throw new Error("Expected bundled Codex test model");
+			const startupModel = { ...registry.fitContextWindow(bundled, settings), serviceTiers: startupTiers };
+			// Match native Codex's versioned namespace and authoritative snapshot
+			// fingerprint, so offline discovery reads this row without static fallback.
+			writeModelCache(
+				resolveModelCacheProviderId("openai-codex"),
+				Date.now(),
+				[{ ...startupModel, serviceTiers: discoveredTiers }],
+				true,
+				fingerprintStaticModels(getBundledModels("openai-codex"), true),
+				path.join(tempDir.path(), "models.db"),
+			);
+			const streamFn = vi.fn(() => {
+				throw new Error("Discovery must not send a model prompt");
+			});
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: { model: startupModel, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn,
+			});
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry: registry,
+				rebindModelAfterDiscovery,
+				thinkingLevel: Effort.High,
+				serviceTierByFamily: { openai: "ultrafast" },
+			});
+			const close = vi.fn();
+			const providerState = { close } satisfies ProviderSessionState;
+			session.providerSessionState.set("openai-codex-responses", providerState);
+			const events: AgentSessionEvent[] = [];
+			session.subscribe(event => events.push(event));
+			return { session, registry, streamFn, close, providerState, events };
+		}
+
+		it.each<{
+			name: string;
+			startupTiers: readonly string[] | undefined;
+			discoveredTiers: readonly string[] | undefined;
+		}>([
+			{ name: "addition", startupTiers: ["priority"], discoveredTiers: ["priority", "ultrafast"] },
+			{ name: "removal", startupTiers: ["priority", "ultrafast"], discoveredTiers: ["priority"] },
+			{ name: "empty list", startupTiers: ["priority", "ultrafast"], discoveredTiers: [] },
+			{ name: "unreported list", startupTiers: ["priority", "ultrafast"], discoveredTiers: undefined },
+		])("rebinds tier $name without a context-window change or model-switch side effects", async testCase => {
+			const {
+				session: active,
+				registry,
+				streamFn,
+				close,
+				providerState,
+				events,
+			} = createTierDiscoverySession(testCase.startupTiers, testCase.discoveredTiers);
+			const startupModel = active.model!;
+			const tiers = active.serviceTierByFamily;
+			const thinkingLevel = active.configuredThinkingLevel();
+			const entries = active.sessionManager.getEntries();
+			const modelChanged = Promise.withResolvers<void>();
+			active.subscribe(event => {
+				if (event.type === "model_changed") modelChanged.resolve();
+			});
+			expect(shouldSendServiceTier(active.effectiveServiceTier(startupModel), startupModel)).toBe(
+				testCase.startupTiers?.includes("ultrafast") === true,
+			);
+
+			// Arm in the constructor, then start the actual registry background
+			// lifecycle later, as a delayed native startup discovery does.
+			registry.refreshInBackground("offline");
+			await Promise.race([
+				modelChanged.promise,
+				scheduler.wait(5_000).then(() => {
+					throw new Error("model_changed was not emitted after tier discovery settled");
+				}),
+			]);
+			await registry.awaitBackgroundRefresh();
+
+			const rebound = active.model!;
+			expect(rebound.id).toBe(startupModel.id);
+			expect(rebound.contextWindow).toBe(startupModel.contextWindow);
+			expect(rebound.serviceTiers).toEqual(testCase.discoveredTiers);
+			expect(shouldSendServiceTier(active.effectiveServiceTier(rebound), rebound)).toBe(
+				testCase.discoveredTiers?.includes("ultrafast") === true,
+			);
+			expect(active.serviceTierByFamily).toBe(tiers);
+			expect(active.configuredThinkingLevel()).toBe(thinkingLevel);
+			expect(active.sessionManager.getEntries()).toEqual(entries);
+			expect(active.agent.state.systemPrompt).toEqual(["Test"]);
+			expect(active.messages).toEqual([]);
+			expect(streamFn).not.toHaveBeenCalled();
+			expect(close).not.toHaveBeenCalled();
+			expect(active.providerSessionState.get("openai-codex-responses")).toBe(providerState);
+			expect(events.filter(event => event.type === "model_changed")).toHaveLength(1);
+			expect(events.filter(event => event.type === "notice")).toEqual([]);
+		});
+
+		it.each(["unchanged", "caller-owned", "switched", "switched-back", "disposed"])(
+			"leaves the active binding alone after discovery when %s",
+			async mode => {
+				const startupTiers = ["priority"];
+				const {
+					session: active,
+					registry,
+					events,
+				} = createTierDiscoverySession(
+					startupTiers,
+					mode === "unchanged" ? [...startupTiers] : ["priority", "ultrafast"],
+					mode !== "caller-owned",
+				);
+				const startupModel = active.model!;
+				const discoveryStarted = Promise.withResolvers<void>();
+				const releaseDiscovery = Promise.withResolvers<void>();
+				const refresh = registry.refresh.bind(registry);
+				vi.spyOn(registry, "refresh").mockImplementation(async (strategy, options) => {
+					discoveryStarted.resolve();
+					await releaseDiscovery.promise;
+					await refresh(strategy, options);
+				});
+				registry.refreshInBackground("offline");
+				await discoveryStarted.promise;
+				if (mode === "switched" || mode === "switched-back") {
+					const other = registry.find("openai", "gpt-4o-mini");
+					if (!other) throw new Error("Expected alternate test model");
+					await active.setModel(other);
+					if (mode === "switched-back") await active.setModel(startupModel);
+				}
+				if (mode === "disposed") await active.dispose();
+				const selectedModel = active.model;
+				const modelChangeCount = events.filter(event => event.type === "model_changed").length;
+				releaseDiscovery.resolve();
+				await registry.awaitBackgroundRefresh();
+				expect(active.model).toBe(selectedModel);
+				expect(events.filter(event => event.type === "model_changed")).toHaveLength(modelChangeCount);
+			},
+		);
 	});
 
 	it("warns on unknown or malformed model-selector chain keys at startup", () => {

@@ -1141,6 +1141,8 @@ export class AgentSession implements SettingsScope {
 	#autolearnCaptureTask: Promise<void> | undefined;
 	#isDisposed = false;
 	#modelDiscoveryAbortController = new AbortController();
+	/** Later model bindings invalidate startup rebinding, even after switching back. */
+	#modelBindingRevision = 0;
 	/** Process-wide by default (double-spend safety across sessions); injectable for tests. */
 	#resetCoordinator: CodexAutoRedeemCoordinator;
 	/** Each turn stream may adopt a peer's confirmed reset once, not retry on it indefinitely. */
@@ -12489,6 +12491,7 @@ export class AgentSession implements SettingsScope {
 	}
 
 	async #setModelWithProviderSessionReset(model: Model): Promise<void> {
+		this.#modelBindingRevision++;
 		const currentModel = this.model;
 		const isChanging = !currentModel || !modelsAreEqual(currentModel, model);
 		if (currentModel) {
@@ -15437,28 +15440,39 @@ export class AgentSession implements SettingsScope {
 	 * discovery; the bundled base entry still carries the full long-context
 	 * window, so a fresh session runs with the 1.05M window that contradicts the
 	 * 400K catalog value until the user re-selects the same model. Re-look-up the
-	 * active selector post-discovery and, when its context window changed, fold
-	 * the refreshed spec into the live model. Same selector, so this is a metadata
-	 * refresh with no provider-session reset; reconcile model-dependent tools and
-	 * append-only state before `model_changed` notifies the status line and RPC
-	 * subscribers. Issue #10488.
+	 * active selector post-discovery and, when its context window or advertised
+	 * service tiers changed, fold the refreshed spec into the live model. Same
+	 * selector, so this is a metadata refresh with no provider-session reset;
+	 * reconcile model-dependent tools and append-only state before `model_changed`
+	 * notifies the status line and RPC subscribers. Issue #10488.
 	 */
 	async #rebindActiveModelAfterModelDiscovery(): Promise<void> {
 		const boundAtStartup = this.model;
+		const bindingRevision = this.#modelBindingRevision;
 		if (this.#isDisposed || !boundAtStartup) return;
 		if (typeof this.#modelRegistry.awaitInitialBackgroundRefresh !== "function") return;
 		await this.#modelRegistry.awaitInitialBackgroundRefresh(this.#modelDiscoveryAbortController.signal);
 		if (this.#isDisposed) return;
-		// Only silently re-metadata the startup-bound selector: bail if the user
-		// switched models while discovery was in flight.
+		// Only silently re-metadata the untouched startup binding: a switch away
+		// and back also leaves the user's later binding authoritative.
 		const current = this.model;
-		if (!current || !modelsAreEqual(current, boundAtStartup)) return;
+		if (!current || this.#modelBindingRevision !== bindingRevision || !modelsAreEqual(current, boundAtStartup))
+			return;
 		const found = this.#modelRegistry.find(current.provider, current.id);
 		const refreshed = found && this.#modelRegistry.fitContextWindow(found, this.settings);
-		if (!refreshed || refreshed.contextWindow === current.contextWindow) return;
+		if (!refreshed) return;
+		const currentTiers = current.serviceTiers;
+		const refreshedTiers = refreshed.serviceTiers;
+		const tiersUnchanged =
+			currentTiers === refreshedTiers ||
+			(currentTiers !== undefined &&
+				refreshedTiers !== undefined &&
+				currentTiers.length === refreshedTiers.length &&
+				currentTiers.every((tier, index) => tier === refreshedTiers[index]));
+		if (refreshed.contextWindow === current.contextWindow && tiersUnchanged) return;
 		this.agent.setModel(refreshed);
 		await this.#reconcileModelDependentState(refreshed);
-		if (this.#isDisposed) return;
+		if (this.#isDisposed || this.#modelBindingRevision !== bindingRevision) return;
 		this.#emit({ type: "model_changed" });
 	}
 

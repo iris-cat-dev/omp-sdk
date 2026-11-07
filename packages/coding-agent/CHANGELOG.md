@@ -32,6 +32,7 @@
 
 ### Fixed
 
+- Fixed startup model discovery leaving live service-tier capabilities stale when the model's context window was unchanged, delaying Ultrafast controls until a later session refresh.
 - Fixed `ask` failing in Node SDK sessions before showing a question.
 - Fixed and re-enabled `debug` in Node SDK/Desktop sessions, including adapter launch, terminal execution, socket transports, and process cleanup without Bun.
 - Fixed Desktop Node SDK extensions failing to load the native auth gateway used for local model forwarding.
