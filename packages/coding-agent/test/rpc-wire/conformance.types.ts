@@ -49,6 +49,7 @@ import type {
 	RpcOpenSessionResult,
 	RpcPromptError,
 	RpcPromptResultFrame,
+	RpcPromptContext,
 	RpcReadyFrame,
 	RpcResponse,
 	RpcSessionSettledFrame,
@@ -255,6 +256,19 @@ export type State = Assert<
 		queuedMessages: Outbound<RpcSessionState["queuedMessages"], Wire.QueuedMessagesState>;
 		dumpTool: Outbound<NonNullable<RpcSessionState["dumpTools"]>[number], Wire.ToolDescriptor>;
 		contextUsage: Outbound<ContextUsage, Wire.ContextUsage>;
+		promptContext: Outbound<RpcPromptContext, Wire.PromptContext>;
+		promptContextModel: Outbound<NonNullable<RpcPromptContext["model"]>, Wire.PromptContextModel>;
+		promptContextBreakdown: Outbound<RpcPromptContext["breakdown"], Wire.PromptContextBreakdown>;
+		promptContextBreakdownCategory: Outbound<
+			RpcPromptContext["breakdown"]["categories"][number],
+			Wire.PromptContextBreakdownCategory
+		>;
+		promptContextCategory: Outbound<RpcPromptContext["categories"][number], Wire.PromptContextCategory>;
+		promptContextEntry: Outbound<RpcPromptContext["categories"][number]["entries"][number], Wire.PromptContextEntry>;
+		promptContextThinkingGroup: Outbound<
+			NonNullable<RpcPromptContext["categories"][number]["entries"][number]["thinkingGroup"]>,
+			Wire.PromptContextThinkingGroup
+		>;
 		todoPhase: Outbound<TodoPhase, Wire.TodoPhase>;
 		todoItem: Outbound<TodoItem, Wire.TodoItem>;
 		todoPhaseInbound: Inbound<Wire.TodoPhase, TodoPhase>;

@@ -568,6 +568,70 @@ class RuntimeResource:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class PromptContextThinkingGroup:
+    id: str
+    label: str
+    tokens: float
+    interrupted: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PromptContextEntry:
+    id: str
+    label: str
+    text: str
+    tokens: float
+    info: str | None = None
+    path: str | None = None
+    timestamp: float | None = None
+    call_id: str | None = None
+    interrupted: bool | None = None
+    thinking_group: PromptContextThinkingGroup | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PromptContextCategory:
+    id: Literal["system-prompt", "skills", "built-in-tools", "custom-tools", "user-messages", "assistant-messages", "assistant-thinking", "tool-calls", "tool-output"]
+    label: str
+    tokens: float
+    entries: tuple[PromptContextEntry, ...]
+    key: str | None = None
+    children: tuple[PromptContextCategory, ...] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PromptContextBreakdownCategory:
+    id: str
+    label: str
+    tokens: float
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PromptContextBreakdown:
+    context_window: float
+    used_tokens: float
+    free_tokens: float
+    auto_compact_buffer_tokens: float
+    categories: tuple[PromptContextBreakdownCategory, ...]
+    threshold_tokens: float | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PromptContextModel:
+    provider: str
+    id: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PromptContext:
+    """Current native context with local token attribution estimates, without hooks, provider transforms, or model calls."""
+    captured_at: str
+    model: PromptContextModel | None
+    breakdown: PromptContextBreakdown
+    categories: tuple[PromptContextCategory, ...]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TodoItem:
     content: str
     status: TodoStatus
@@ -1928,6 +1992,83 @@ def parse_runtime_resource(value: object, path: str = "RuntimeResource") -> Runt
         releasable=required(payload, "releasable", decode_bool, path),
         owner_agent_id=optional(payload, "ownerAgentId", decode_str, path),
         pid=optional(payload, "pid", decode_int, path),
+    )
+
+
+def parse_prompt_context_thinking_group(value: object, path: str = "PromptContextThinkingGroup") -> PromptContextThinkingGroup:
+    payload = expect_object(value, path)
+    return PromptContextThinkingGroup(
+        id=required(payload, "id", decode_str, path),
+        label=required(payload, "label", decode_str, path),
+        tokens=required(payload, "tokens", decode_float, path),
+        interrupted=optional(payload, "interrupted", decode_bool, path),
+    )
+
+
+def parse_prompt_context_entry(value: object, path: str = "PromptContextEntry") -> PromptContextEntry:
+    payload = expect_object(value, path)
+    return PromptContextEntry(
+        id=required(payload, "id", decode_str, path),
+        label=required(payload, "label", decode_str, path),
+        text=required(payload, "text", decode_str, path),
+        tokens=required(payload, "tokens", decode_float, path),
+        info=optional(payload, "info", decode_str, path),
+        path=optional(payload, "path", decode_str, path),
+        timestamp=optional(payload, "timestamp", decode_float, path),
+        call_id=optional(payload, "callId", decode_str, path),
+        interrupted=optional(payload, "interrupted", decode_bool, path),
+        thinking_group=optional(payload, "thinkingGroup", parse_prompt_context_thinking_group, path),
+    )
+
+
+def parse_prompt_context_category(value: object, path: str = "PromptContextCategory") -> PromptContextCategory:
+    payload = expect_object(value, path)
+    return PromptContextCategory(
+        id=required(payload, "id", cast('Decoder[Literal["system-prompt", "skills", "built-in-tools", "custom-tools", "user-messages", "assistant-messages", "assistant-thinking", "tool-calls", "tool-output"]]', literal(frozenset({"system-prompt", "skills", "built-in-tools", "custom-tools", "user-messages", "assistant-messages", "assistant-thinking", "tool-calls", "tool-output"}))), path),
+        label=required(payload, "label", decode_str, path),
+        tokens=required(payload, "tokens", decode_float, path),
+        entries=required(payload, "entries", array(parse_prompt_context_entry), path),
+        key=optional(payload, "key", decode_str, path),
+        children=optional(payload, "children", array(parse_prompt_context_category), path),
+    )
+
+
+def parse_prompt_context_breakdown_category(value: object, path: str = "PromptContextBreakdownCategory") -> PromptContextBreakdownCategory:
+    payload = expect_object(value, path)
+    return PromptContextBreakdownCategory(
+        id=required(payload, "id", decode_str, path),
+        label=required(payload, "label", decode_str, path),
+        tokens=required(payload, "tokens", decode_float, path),
+    )
+
+
+def parse_prompt_context_breakdown(value: object, path: str = "PromptContextBreakdown") -> PromptContextBreakdown:
+    payload = expect_object(value, path)
+    return PromptContextBreakdown(
+        context_window=required(payload, "contextWindow", decode_float, path),
+        used_tokens=required(payload, "usedTokens", decode_float, path),
+        free_tokens=required(payload, "freeTokens", decode_float, path),
+        auto_compact_buffer_tokens=required(payload, "autoCompactBufferTokens", decode_float, path),
+        categories=required(payload, "categories", array(parse_prompt_context_breakdown_category), path),
+        threshold_tokens=optional(payload, "thresholdTokens", decode_float, path),
+    )
+
+
+def parse_prompt_context_model(value: object, path: str = "PromptContextModel") -> PromptContextModel:
+    payload = expect_object(value, path)
+    return PromptContextModel(
+        provider=required(payload, "provider", decode_str, path),
+        id=required(payload, "id", decode_str, path),
+    )
+
+
+def parse_prompt_context(value: object, path: str = "PromptContext") -> PromptContext:
+    payload = expect_object(value, path)
+    return PromptContext(
+        captured_at=required(payload, "capturedAt", decode_str, path),
+        model=required(payload, "model", nullable(parse_prompt_context_model), path),
+        breakdown=required(payload, "breakdown", parse_prompt_context_breakdown, path),
+        categories=required(payload, "categories", array(parse_prompt_context_category), path),
     )
 
 
@@ -3378,6 +3519,11 @@ class WireClient:
         params: dict[str, object] = {}
         return parse_session_state(self._command("get_state", params), "get_state")
 
+    def get_prompt_context(self) -> PromptContext:
+        """Read the current prompt context without generating or running session hooks."""
+        params: dict[str, object] = {}
+        return parse_prompt_context(self._command("get_prompt_context", params), "get_prompt_context")
+
     def get_runtime_resources(self) -> tuple[RuntimeResource, ...]:
         """List the actual resources retained by this session without starting new kernels."""
         params: dict[str, object] = {}
@@ -4122,6 +4268,13 @@ __all__ = [
     "OpenUrlUiRequest",
     "PromoteQueuedMessageResult",
     "PromptAck",
+    "PromptContext",
+    "PromptContextBreakdown",
+    "PromptContextBreakdownCategory",
+    "PromptContextCategory",
+    "PromptContextEntry",
+    "PromptContextModel",
+    "PromptContextThinkingGroup",
     "PromptError",
     "PromptResultEvent",
     "PromptStatus",
@@ -4304,6 +4457,13 @@ __all__ = [
     "parse_open_url_ui_request",
     "parse_promote_queued_message_result",
     "parse_prompt_ack",
+    "parse_prompt_context",
+    "parse_prompt_context_breakdown",
+    "parse_prompt_context_breakdown_category",
+    "parse_prompt_context_category",
+    "parse_prompt_context_entry",
+    "parse_prompt_context_model",
+    "parse_prompt_context_thinking_group",
     "parse_prompt_error",
     "parse_prompt_result_event",
     "parse_python_execution_message",

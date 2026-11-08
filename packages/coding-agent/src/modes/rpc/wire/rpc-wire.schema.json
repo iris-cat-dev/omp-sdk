@@ -142,6 +142,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "get_prompt_context",
+				"doc": "Read the current prompt context without generating or running session hooks.",
+				"params": null,
+				"result": "PromptContext",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "get_runtime_resources",
 				"doc": "List the actual resources retained by this session without starting new kernels.",
 				"params": null,
@@ -2437,6 +2448,216 @@
 				"liveHandles",
 				"releasable"
 			]
+		},
+		"PromptContextThinkingGroup": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"label": {
+					"type": "string"
+				},
+				"tokens": {
+					"type": "number"
+				},
+				"interrupted": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"id",
+				"label",
+				"tokens"
+			]
+		},
+		"PromptContextEntry": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"label": {
+					"type": "string"
+				},
+				"text": {
+					"type": "string"
+				},
+				"tokens": {
+					"type": "number"
+				},
+				"info": {
+					"type": "string"
+				},
+				"path": {
+					"type": "string"
+				},
+				"timestamp": {
+					"type": "number"
+				},
+				"callId": {
+					"type": "string"
+				},
+				"interrupted": {
+					"type": "boolean"
+				},
+				"thinkingGroup": {
+					"$ref": "#/$defs/PromptContextThinkingGroup"
+				}
+			},
+			"required": [
+				"id",
+				"label",
+				"text",
+				"tokens"
+			]
+		},
+		"PromptContextCategory": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"enum": [
+						"system-prompt",
+						"skills",
+						"built-in-tools",
+						"custom-tools",
+						"user-messages",
+						"assistant-messages",
+						"assistant-thinking",
+						"tool-calls",
+						"tool-output"
+					],
+					"type": "string"
+				},
+				"label": {
+					"type": "string"
+				},
+				"tokens": {
+					"type": "number"
+				},
+				"entries": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/PromptContextEntry"
+					}
+				},
+				"key": {
+					"type": "string"
+				},
+				"children": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/PromptContextCategory"
+					}
+				}
+			},
+			"required": [
+				"id",
+				"label",
+				"tokens",
+				"entries"
+			]
+		},
+		"PromptContextBreakdownCategory": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"label": {
+					"type": "string"
+				},
+				"tokens": {
+					"type": "number"
+				}
+			},
+			"required": [
+				"id",
+				"label",
+				"tokens"
+			]
+		},
+		"PromptContextBreakdown": {
+			"type": "object",
+			"properties": {
+				"contextWindow": {
+					"type": "number"
+				},
+				"usedTokens": {
+					"type": "number"
+				},
+				"freeTokens": {
+					"type": "number"
+				},
+				"autoCompactBufferTokens": {
+					"type": "number"
+				},
+				"categories": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/PromptContextBreakdownCategory"
+					}
+				},
+				"thresholdTokens": {
+					"type": "number"
+				}
+			},
+			"required": [
+				"contextWindow",
+				"usedTokens",
+				"freeTokens",
+				"autoCompactBufferTokens",
+				"categories"
+			]
+		},
+		"PromptContextModel": {
+			"type": "object",
+			"properties": {
+				"provider": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"provider",
+				"id"
+			]
+		},
+		"PromptContext": {
+			"type": "object",
+			"properties": {
+				"capturedAt": {
+					"type": "string"
+				},
+				"model": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PromptContextModel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"breakdown": {
+					"$ref": "#/$defs/PromptContextBreakdown"
+				},
+				"categories": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/PromptContextCategory"
+					}
+				}
+			},
+			"required": [
+				"capturedAt",
+				"model",
+				"breakdown",
+				"categories"
+			],
+			"description": "Current native context with local token attribution estimates, without hooks, provider transforms, or model calls."
 		},
 		"TodoItem": {
 			"type": "object",

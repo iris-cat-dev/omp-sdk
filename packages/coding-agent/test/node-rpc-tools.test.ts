@@ -11,6 +11,77 @@ const packageDir = path.resolve(import.meta.dir, "..");
 for (const artifact of ["node", "node-desktop"]) {
 	const entry = path.join(packageDir, "dist", artifact, "rpc.mjs");
 	describe.skipIf(!fs.existsSync(entry))(`${artifact} RPC tool policy`, () => {
+		test("prompt-context reads the native snapshot without starting generation or exposing model configuration", async () => {
+			using root = TempDir.createSync("@node-rpc-prompt-context-");
+			const options = {
+				cwd: root.path(),
+				agentDir: root.join("agent"),
+				model: "openai/gpt-4o-mini",
+				noSession: true,
+				extraArgs: [
+					"--no-extensions",
+					"--no-lsp",
+					"--no-context-files",
+					"--no-skills",
+					"--no-rules",
+					"--tools",
+					"read",
+				],
+			};
+			using client = new RpcClient({
+				command: () => [
+					"node",
+					"--input-type=module",
+					"-e",
+					`import { startNodeRpcHost } from ${JSON.stringify(pathToFileURL(entry).href)}; globalThis.fetch = async () => { throw new Error("Prompt inspection must not call a model"); }; await startNodeRpcHost(${JSON.stringify(options)});`,
+				],
+				cwd: root.path(),
+				env: {
+					HOME: root.path(),
+					PI_CODING_AGENT_DIR: root.join("agent"),
+					PI_CONFIG_DIR: ".omp",
+					PI_PROFILE: "",
+					XDG_DATA_HOME: root.join("data"),
+					XDG_STATE_HOME: root.join("state"),
+					XDG_CACHE_HOME: root.join("cache"),
+					OPENAI_API_KEY: "test-no-network",
+				},
+			});
+			await client.start();
+			const beforeMessages = await client.getMessages();
+			const beforeStats = await client.getSessionStats();
+			const events: string[] = [];
+			const unsubscribe = client.onEvent(event => events.push(event.type));
+			try {
+				const context = await client.getPromptContext();
+				expect(context.model).toEqual({ provider: "openai", id: "gpt-4o-mini" });
+				expect(Object.keys(context.breakdown).sort()).toEqual(
+					[
+						"autoCompactBufferTokens",
+						"categories",
+						"contextWindow",
+						"freeTokens",
+						"usedTokens",
+						...(context.breakdown.thresholdTokens === undefined ? [] : ["thresholdTokens"]),
+					].sort(),
+				);
+				expect(
+					context.categories.find(category => category.id === "built-in-tools")?.entries.map(entry => entry.label),
+				).toEqual(["read"]);
+				const state = await client.getState();
+				expect(
+					context.categories.find(category => category.id === "system-prompt")?.entries.map(entry => entry.text),
+				).toEqual(state.systemPrompt);
+				expect(await client.getMessages()).toEqual(beforeMessages);
+				expect(await client.getSessionStats()).toEqual(beforeStats);
+				expect(
+					events.filter(type => ["agent_start", "message_start", "tool_execution_start"].includes(type)),
+				).toEqual([]);
+			} finally {
+				unsubscribe();
+			}
+		}, 30_000);
+
 		for (const scenario of [
 			{ name: "keeps images when an unrelated built-in is disabled", denied: ["ast_edit"], args: [], image: true },
 			{ name: "honors an explicit image denial", denied: ["generate_image"], args: [], image: false },

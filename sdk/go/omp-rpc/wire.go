@@ -2235,6 +2235,223 @@ func (v *RuntimeResourceState) UnmarshalJSON(data []byte) error {
 	return unknownValue("RuntimeResourceState", s)
 }
 
+type PromptContextThinkingGroup struct {
+	ID          string  `json:"id"`
+	Label       string  `json:"label"`
+	Tokens      float64 `json:"tokens"`
+	Interrupted *bool   `json:"interrupted,omitempty"`
+}
+
+func (v *PromptContextThinkingGroup) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PromptContextThinkingGroup", v.decodeFrom)
+}
+
+func (v *PromptContextThinkingGroup) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PromptContextThinkingGroup
+	d := fieldDecoder{raw: raw, owner: "PromptContextThinkingGroup"}
+	d.required("id", &out.ID)
+	d.required("label", &out.Label)
+	d.required("tokens", &out.Tokens)
+	d.optional("interrupted", &out.Interrupted)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type PromptContextEntry struct {
+	ID            string                      `json:"id"`
+	Label         string                      `json:"label"`
+	Text          string                      `json:"text"`
+	Tokens        float64                     `json:"tokens"`
+	Info          *string                     `json:"info,omitempty"`
+	Path          *string                     `json:"path,omitempty"`
+	Timestamp     *float64                    `json:"timestamp,omitempty"`
+	CallID        *string                     `json:"callId,omitempty"`
+	Interrupted   *bool                       `json:"interrupted,omitempty"`
+	ThinkingGroup *PromptContextThinkingGroup `json:"thinkingGroup,omitempty"`
+}
+
+func (v *PromptContextEntry) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PromptContextEntry", v.decodeFrom)
+}
+
+func (v *PromptContextEntry) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PromptContextEntry
+	d := fieldDecoder{raw: raw, owner: "PromptContextEntry"}
+	d.required("id", &out.ID)
+	d.required("label", &out.Label)
+	d.required("text", &out.Text)
+	d.required("tokens", &out.Tokens)
+	d.optional("info", &out.Info)
+	d.optional("path", &out.Path)
+	d.optional("timestamp", &out.Timestamp)
+	d.optional("callId", &out.CallID)
+	d.optional("interrupted", &out.Interrupted)
+	d.optional("thinkingGroup", &out.ThinkingGroup)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type PromptContextCategory struct {
+	ID       PromptContextCategoryID `json:"id"`
+	Label    string                  `json:"label"`
+	Tokens   float64                 `json:"tokens"`
+	Entries  []PromptContextEntry    `json:"entries"`
+	Key      *string                 `json:"key,omitempty"`
+	Children []PromptContextCategory `json:"children,omitempty"`
+}
+
+func (v *PromptContextCategory) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PromptContextCategory", v.decodeFrom)
+}
+
+func (v *PromptContextCategory) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PromptContextCategory
+	d := fieldDecoder{raw: raw, owner: "PromptContextCategory"}
+	d.required("id", &out.ID)
+	d.required("label", &out.Label)
+	d.required("tokens", &out.Tokens)
+	d.required("entries", &out.Entries)
+	d.optional("key", &out.Key)
+	d.optional("children", &out.Children)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type PromptContextCategoryID string
+
+const (
+	PromptContextCategoryIDSystemPrompt      PromptContextCategoryID = "system-prompt"
+	PromptContextCategoryIDSkills            PromptContextCategoryID = "skills"
+	PromptContextCategoryIDBuiltInTools      PromptContextCategoryID = "built-in-tools"
+	PromptContextCategoryIDCustomTools       PromptContextCategoryID = "custom-tools"
+	PromptContextCategoryIDUserMessages      PromptContextCategoryID = "user-messages"
+	PromptContextCategoryIDAssistantMessages PromptContextCategoryID = "assistant-messages"
+	PromptContextCategoryIDAssistantThinking PromptContextCategoryID = "assistant-thinking"
+	PromptContextCategoryIDToolCalls         PromptContextCategoryID = "tool-calls"
+	PromptContextCategoryIDToolOutput        PromptContextCategoryID = "tool-output"
+)
+
+func (v *PromptContextCategoryID) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "PromptContextCategoryID")
+	if err != nil {
+		return err
+	}
+	switch value := PromptContextCategoryID(s); value {
+	case PromptContextCategoryIDSystemPrompt, PromptContextCategoryIDSkills, PromptContextCategoryIDBuiltInTools, PromptContextCategoryIDCustomTools, PromptContextCategoryIDUserMessages, PromptContextCategoryIDAssistantMessages, PromptContextCategoryIDAssistantThinking, PromptContextCategoryIDToolCalls, PromptContextCategoryIDToolOutput:
+		*v = value
+		return nil
+	}
+	return unknownValue("PromptContextCategoryID", s)
+}
+
+type PromptContextBreakdownCategory struct {
+	ID     string  `json:"id"`
+	Label  string  `json:"label"`
+	Tokens float64 `json:"tokens"`
+}
+
+func (v *PromptContextBreakdownCategory) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PromptContextBreakdownCategory", v.decodeFrom)
+}
+
+func (v *PromptContextBreakdownCategory) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PromptContextBreakdownCategory
+	d := fieldDecoder{raw: raw, owner: "PromptContextBreakdownCategory"}
+	d.required("id", &out.ID)
+	d.required("label", &out.Label)
+	d.required("tokens", &out.Tokens)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type PromptContextBreakdown struct {
+	ContextWindow           float64                          `json:"contextWindow"`
+	UsedTokens              float64                          `json:"usedTokens"`
+	FreeTokens              float64                          `json:"freeTokens"`
+	AutoCompactBufferTokens float64                          `json:"autoCompactBufferTokens"`
+	Categories              []PromptContextBreakdownCategory `json:"categories"`
+	ThresholdTokens         *float64                         `json:"thresholdTokens,omitempty"`
+}
+
+func (v *PromptContextBreakdown) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PromptContextBreakdown", v.decodeFrom)
+}
+
+func (v *PromptContextBreakdown) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PromptContextBreakdown
+	d := fieldDecoder{raw: raw, owner: "PromptContextBreakdown"}
+	d.required("contextWindow", &out.ContextWindow)
+	d.required("usedTokens", &out.UsedTokens)
+	d.required("freeTokens", &out.FreeTokens)
+	d.required("autoCompactBufferTokens", &out.AutoCompactBufferTokens)
+	d.required("categories", &out.Categories)
+	d.optional("thresholdTokens", &out.ThresholdTokens)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type PromptContextModel struct {
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+}
+
+func (v *PromptContextModel) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PromptContextModel", v.decodeFrom)
+}
+
+func (v *PromptContextModel) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PromptContextModel
+	d := fieldDecoder{raw: raw, owner: "PromptContextModel"}
+	d.required("provider", &out.Provider)
+	d.required("id", &out.ID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Current native context with local token attribution estimates, without hooks, provider transforms, or model calls.
+type PromptContext struct {
+	CapturedAt string                  `json:"capturedAt"`
+	Model      *PromptContextModel     `json:"model"`
+	Breakdown  PromptContextBreakdown  `json:"breakdown"`
+	Categories []PromptContextCategory `json:"categories"`
+}
+
+func (v *PromptContext) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PromptContext", v.decodeFrom)
+}
+
+func (v *PromptContext) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PromptContext
+	d := fieldDecoder{raw: raw, owner: "PromptContext"}
+	d.required("capturedAt", &out.CapturedAt)
+	d.nullable("model", &out.Model)
+	d.required("breakdown", &out.Breakdown)
+	d.required("categories", &out.Categories)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type TodoItem struct {
 	Content string     `json:"content"`
 	Status  TodoStatus `json:"status"`
@@ -7971,6 +8188,13 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	var out SessionState
 	err := c.call(ctx, "get_state", nil, 0, &out)
+	return out, err
+}
+
+// GetPromptContext sends "get_prompt_context": Read the current prompt context without generating or running session hooks.
+func (c Commands) GetPromptContext(ctx context.Context) (PromptContext, error) {
+	var out PromptContext
+	err := c.call(ctx, "get_prompt_context", nil, 0, &out)
 	return out, err
 }
 

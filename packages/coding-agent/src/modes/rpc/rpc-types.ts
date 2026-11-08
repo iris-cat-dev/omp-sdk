@@ -36,6 +36,22 @@ import type { RpcMessagesPage } from "./rpc-messages";
 import type { GoalModeState } from "../../goals/state";
 import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
 import type { BtwHistoryRecord } from "../../session/btw-history";
+import type { ContextViewData } from "@oh-my-pi/pi-tui/chrome/context-view-model";
+
+/** A read-only current-context view; never a captured provider request or a full model descriptor. */
+export interface RpcPromptContext {
+	capturedAt: string;
+	model: { provider: string; id: string } | null;
+	breakdown: {
+		contextWindow: number;
+		usedTokens: number;
+		freeTokens: number;
+		autoCompactBufferTokens: number;
+		thresholdTokens?: number;
+		categories: { id: string; label: string; tokens: number }[];
+	};
+	categories: ContextViewData["categories"];
+}
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -72,6 +88,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_prompt_context" }
 	| { id?: string; type: "get_runtime_resources" }
 	| { id?: string; type: "release_runtime_resource"; resourceId: string }
 	| { id?: string; type: "set_approval_mode"; mode: ApprovalMode }
@@ -476,6 +493,7 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "get_prompt_context"; success: true; data: RpcPromptContext }
 	| {
 			id?: string;
 			type: "response";

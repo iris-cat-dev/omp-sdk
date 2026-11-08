@@ -15,6 +15,7 @@
 - Added `setToolEnabled(name, enabled)` for queued single-tool selection changes that retain concurrently registered tools and unrelated presentation ([#122](https://github.com/iris-cat-dev/omp/issues/122)).
 - Added command-only RPC execution for registered extension commands, with explicit missing-command failure instead of submitting model input ([#129](https://github.com/iris-cat-dev/omp/issues/129)).
 - Added stable client message identities for prompt, steer, follow-up, and branch history so hosts can reconcile transformed or repeated submissions without matching their text.
+- Added read-only `get_prompt_context` RPC inspection of current system blocks, messages, tool definitions, source metadata, and token attribution without starting model generation.
 - Added queueable compaction: `/compact` sent with the follow-up key (Ctrl+Q) while the agent works now runs when it yields instead of interrupting it ([#17397](https://github.com/can1357/oh-my-pi/pull/17397) by [@H4vC](https://github.com/H4vC))
 
 ### Changed

@@ -411,6 +411,63 @@ export interface RuntimeResource {
 	pid?: number;
 }
 
+export interface PromptContextThinkingGroup {
+	id: string;
+	label: string;
+	tokens: number;
+	interrupted?: boolean;
+}
+
+export interface PromptContextEntry {
+	id: string;
+	label: string;
+	text: string;
+	tokens: number;
+	info?: string;
+	path?: string;
+	timestamp?: number;
+	callId?: string;
+	interrupted?: boolean;
+	thinkingGroup?: PromptContextThinkingGroup;
+}
+
+export interface PromptContextCategory {
+	id: "system-prompt" | "skills" | "built-in-tools" | "custom-tools" | "user-messages" | "assistant-messages" | "assistant-thinking" | "tool-calls" | "tool-output";
+	label: string;
+	tokens: number;
+	entries: PromptContextEntry[];
+	key?: string;
+	children?: PromptContextCategory[];
+}
+
+export interface PromptContextBreakdownCategory {
+	id: string;
+	label: string;
+	tokens: number;
+}
+
+export interface PromptContextBreakdown {
+	contextWindow: number;
+	usedTokens: number;
+	freeTokens: number;
+	autoCompactBufferTokens: number;
+	categories: PromptContextBreakdownCategory[];
+	thresholdTokens?: number;
+}
+
+export interface PromptContextModel {
+	provider: string;
+	id: string;
+}
+
+/** Current native context with local token attribution estimates, without hooks, provider transforms, or model calls. */
+export interface PromptContext {
+	capturedAt: string;
+	model: PromptContextModel | null;
+	breakdown: PromptContextBreakdown;
+	categories: PromptContextCategory[];
+}
+
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
@@ -1948,6 +2005,7 @@ export interface RpcWireCommands {
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
 	get_state: { params: undefined; result: SessionState };
+	get_prompt_context: { params: undefined; result: PromptContext };
 	get_runtime_resources: { params: undefined; result: GetRuntimeResourcesResult };
 	release_runtime_resource: { params: ReleaseRuntimeResourceParams; result: ReleaseRuntimeResourceResult };
 	set_approval_mode: { params: SetApprovalModeParams; result: SetApprovalModeResult };

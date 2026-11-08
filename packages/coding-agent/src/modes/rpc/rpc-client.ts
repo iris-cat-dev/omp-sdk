@@ -48,6 +48,7 @@ import type {
 	RpcNavigateTreeResult,
 	RpcOpenSessionResult,
 	RpcPromptResultFrame,
+	RpcPromptContext,
 	RpcRemoveQueuedMessageResult,
 	RpcResponse,
 	RpcSessionSettledFrame,
@@ -851,6 +852,11 @@ export class RpcClient {
 					? state.tokensPerSecond
 					: null,
 		};
+	}
+
+	/** Read current context without submitting input or running generation hooks. */
+	async getPromptContext(): Promise<RpcPromptContext> {
+		return this.#getData(await this.#send({ type: "get_prompt_context" }));
 	}
 
 	/** Change approval mode for this session, including during an active turn. */

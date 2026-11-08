@@ -2929,6 +2929,86 @@ pub struct RuntimeResource {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptContextThinkingGroup {
+	pub id: String,
+	pub label: String,
+	pub tokens: f64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub interrupted: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptContextEntry {
+	pub id: String,
+	pub label: String,
+	pub text: String,
+	pub tokens: f64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub info: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub path: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub timestamp: Option<f64>,
+	#[serde(rename = "callId", default, skip_serializing_if = "Option::is_none")]
+	pub call_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub interrupted: Option<bool>,
+	#[serde(rename = "thinkingGroup", default, skip_serializing_if = "Option::is_none")]
+	pub thinking_group: Option<PromptContextThinkingGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptContextCategory {
+	pub id: PromptContextCategoryId,
+	pub label: String,
+	pub tokens: f64,
+	pub entries: Vec<PromptContextEntry>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub key: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub children: Option<Vec<PromptContextCategory>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptContextBreakdownCategory {
+	pub id: String,
+	pub label: String,
+	pub tokens: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptContextBreakdown {
+	#[serde(rename = "contextWindow")]
+	pub context_window: f64,
+	#[serde(rename = "usedTokens")]
+	pub used_tokens: f64,
+	#[serde(rename = "freeTokens")]
+	pub free_tokens: f64,
+	#[serde(rename = "autoCompactBufferTokens")]
+	pub auto_compact_buffer_tokens: f64,
+	pub categories: Vec<PromptContextBreakdownCategory>,
+	#[serde(rename = "thresholdTokens", default, skip_serializing_if = "Option::is_none")]
+	pub threshold_tokens: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptContextModel {
+	pub provider: String,
+	pub id: String,
+}
+
+/// Current native context with local token attribution estimates, without hooks, provider transforms, or model calls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptContext {
+	#[serde(rename = "capturedAt")]
+	pub captured_at: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub model: Option<PromptContextModel>,
+	pub breakdown: PromptContextBreakdown,
+	pub categories: Vec<PromptContextCategory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
 	pub content: String,
 	pub status: TodoStatus,
@@ -5978,6 +6058,45 @@ impl RuntimeResourceState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PromptContextCategoryId {
+	#[serde(rename = "system-prompt")]
+	SystemPrompt,
+	#[serde(rename = "skills")]
+	Skills,
+	#[serde(rename = "built-in-tools")]
+	BuiltInTools,
+	#[serde(rename = "custom-tools")]
+	CustomTools,
+	#[serde(rename = "user-messages")]
+	UserMessages,
+	#[serde(rename = "assistant-messages")]
+	AssistantMessages,
+	#[serde(rename = "assistant-thinking")]
+	AssistantThinking,
+	#[serde(rename = "tool-calls")]
+	ToolCalls,
+	#[serde(rename = "tool-output")]
+	ToolOutput,
+}
+
+impl PromptContextCategoryId {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::SystemPrompt => "system-prompt",
+			Self::Skills => "skills",
+			Self::BuiltInTools => "built-in-tools",
+			Self::CustomTools => "custom-tools",
+			Self::UserMessages => "user-messages",
+			Self::AssistantMessages => "assistant-messages",
+			Self::AssistantThinking => "assistant-thinking",
+			Self::ToolCalls => "tool-calls",
+			Self::ToolOutput => "tool-output",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
 	Active,
@@ -6445,6 +6564,20 @@ impl Command for GetStateCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SessionState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Read the current prompt context without generating or running session hooks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetPromptContextCommand {}
+
+impl Command for GetPromptContextCommand {
+	const NAME: &'static str = "get_prompt_context";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = PromptContext;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<PromptContext>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

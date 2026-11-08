@@ -55,6 +55,7 @@ import type { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
+import { buildSessionContextView } from "../../session/context-view";
 import { findMostRecentNonEmptySession, findRecentSessionContinuation } from "../../session/session-listing";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
@@ -2322,6 +2323,33 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					return error(id, "release_runtime_resource", "resourceId must be a nonempty string");
 				await session.releaseRuntimeResource(command.resourceId);
 				return success(id, "release_runtime_resource", { released: true });
+
+			case "get_prompt_context": {
+				const capturedAt = new Date().toISOString();
+				const view = buildSessionContextView(session);
+				const {
+					model,
+					contextWindow,
+					usedTokens,
+					freeTokens,
+					autoCompactBufferTokens,
+					thresholdTokens,
+					categories,
+				} = view.breakdown;
+				return success(id, "get_prompt_context", {
+					capturedAt,
+					model: model ? { provider: model.provider, id: model.id } : null,
+					breakdown: {
+						contextWindow,
+						usedTokens,
+						freeTokens,
+						autoCompactBufferTokens,
+						thresholdTokens,
+						categories,
+					},
+					categories: view.categories,
+				});
+			}
 
 			case "get_state": {
 				// A goal exit triggered by the last turn restores tools asynchronously; report after it.

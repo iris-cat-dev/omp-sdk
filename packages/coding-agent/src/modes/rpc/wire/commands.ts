@@ -99,6 +99,11 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 
 	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
 	{
+		name: "get_prompt_context",
+		doc: "Read the current prompt context without generating or running session hooks.",
+		result: "PromptContext",
+	},
+	{
 		name: "get_runtime_resources",
 		doc: "List the actual resources retained by this session without starting new kernels.",
 		result: { resources: "RuntimeResource[]" },
