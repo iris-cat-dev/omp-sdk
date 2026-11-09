@@ -33,6 +33,8 @@
 
 ### Fixed
 
+- Fixed invalid or over-limit image inputs blocking every later conversation turn: rejected image history is removed durably while text and tool results remain, including when reopening a previously stuck session.
+- Fixed filtered or nested image-history edits creating self-referential cold-entry facades and failing persisted history rewrites.
 - Fixed startup model discovery leaving live service-tier capabilities stale when the model's context window was unchanged, delaying Ultrafast controls until a later session refresh.
 - Fixed `ask` failing in Node SDK sessions before showing a question.
 - Fixed and re-enabled `debug` in Node SDK/Desktop sessions, including adapter launch, terminal execution, socket transports, and process cleanup without Bun.

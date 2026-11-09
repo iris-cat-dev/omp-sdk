@@ -117,6 +117,7 @@ import type { CompactionEntry, SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
+import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import experimentalContextNotesReminderPrompt from "../prompts/system/experimental-context-notes-reminder.md" with { type: "text" };
 import experimentalContextRolloverPrompt from "../prompts/system/experimental-context-rollover.md" with { type: "text" };
 import lengthStopRetryTemplate from "../prompts/system/length-stop-retry.md" with { type: "text" };
@@ -224,37 +225,6 @@ function hasUsableCompactionMethod(
 	return resolveCompactionMethodOrder(settings.methodOrder).some(candidate =>
 		isCompactionMethodUsable(candidate, reason, model, settings, excludeMedia),
 	);
-}
-
-/**
- * Concrete media-limit wording in a payload-rejection error (e.g.
- * `request_too_large: too many images`, `image count exceeds the limit of
- * 20`). `ambiguousPayloadRejection` (dual `ContextOverflow` + `PayloadRejected`)
- * only catches text that *also* matches a generic numeric-limit pattern — a
- * digit-free media rejection like the first example sails through as
- * non-ambiguous. That text is still definitive media-budget evidence: token
- * compaction can't raise a provider's image-count limit, and some methods
- * (snapcompact) *add* image frames, making it worse. Such rejections must
- * stay on the terminal payload-dead-end path regardless of compaction
- * availability (#11482).
- *
- * Deliberately narrower than matching bare "images"/"media"/"vision"/"frames"/
- * "pixels" anywhere in the text: a custom provider's error that merely names a
- * vision model (`llava-vision`) or an unrelated `Content-Type` (`media type
- * application/json`) is not evidence the *request* was rejected for a media
- * budget — treating it as such would permanently dead-end an unknown-window
- * session that ordinary compaction could actually recover (#11482). Require
- * the noun to co-occur with a count/limit signal instead — covering the
- * common phrasings: "too many images", "image count"/"image limit", "limit
- * of N images", "maximum (of N) images", "number/count of images",
- * "images exceeds ... maximum", and per-image size/dimension rejections
- * like "image is too large" or "image dimensions exceed 8000 pixels"
- * (#11482).
- */
-const PAYLOAD_MEDIA_LIMIT_EVIDENCE_PATTERN =
-	/\btoo many (?:images?|frames?|pixels?)\b|\b(?:images?|frames?|pixels?)\s*(?:count|limit)\b|\blimit of \d+\s*(?:images?|frames?|pixels?)\b|\bmaximum(?: of \d+)? (?:images?|frames?|pixels?)\b|\b(?:number|count) of (?:images?|frames?|pixels?)\b|\b(?:images?|frames?|pixels?)\b.{0,20}\bexceeds?\b.{0,20}\bmaximum\b|\b(?:images?|frames?) (?:is |are )?too large\b|\b(?:images?|frames?) dimensions?\b.{0,30}\bexceeds?\b.{0,30}\b(?:pixels?|\d+)\b/i;
-function hasExplicitMediaRejectionEvidence(errorMessage: string | undefined): boolean {
-	return errorMessage !== undefined && PAYLOAD_MEDIA_LIMIT_EVIDENCE_PATTERN.test(errorMessage);
 }
 
 /**
@@ -810,9 +780,14 @@ export class SessionMaintenance {
 	 *
 	 * No-op when the branch carries no images; returns `{ removed: 0, tokensFreed: 0 }`
 	 * and skips the disk rewrite.
+	 * `beforeEntryId` limits recovery to entries through that terminal failure,
+	 * leaving subsequently attached images untouched. Manual image removal omits it.
 	 */
-	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
+	async dropImages(beforeEntryId?: string): Promise<{ removed: number; tokensFreed: number }> {
 		const branchEntries = this.#host.sessionManager.getBranch();
+		const rejectionIndex = beforeEntryId ? branchEntries.findIndex(entry => entry.id === beforeEntryId) : -1;
+		if (beforeEntryId && rejectionIndex < 0)
+			throw new Error("Image recovery boundary is missing from session history");
 		const countOptions = { excludeEncryptedReasoning: true } as const;
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
@@ -822,6 +797,9 @@ export class SessionMaintenance {
 		let tokensFreed = 0;
 		let anchoredTokensRemoved = 0;
 		for (const [index, entry] of branchEntries.entries()) {
+			// Images attached after a historical rejection were never rejected. Keep
+			// them usable even when that error is still the latest assistant entry.
+			if (rejectionIndex >= 0 && index > rejectionIndex) break;
 			// Only entries the anchor's provider-reported prompt already carried may
 			// be subtracted from it, and a remote compaction's replacement history
 			// hides everything before its cutoff from the wire.
@@ -875,6 +853,43 @@ export class SessionMaintenance {
 		this.#host.resetAdvisorRuntimes("drop-images");
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return { removed, tokensFreed };
+	}
+
+	/** Remove rejected image inputs durably and return the actual removal count, without replaying the request. */
+	async recoverRejectedImageInputs(message?: AssistantMessage): Promise<number> {
+		if (message && !AIError.isRejectedImageInput(message)) return 0;
+		// Empty terminal errors are omitted from rebuilt runtime context. Find the
+		// durable entry, including live messages whose cold facade has a new identity.
+		const persistenceKey = message ? sessionMessagePersistenceKey(message) : undefined;
+		const rejectedEntry = this.#host.sessionManager
+			.getBranch()
+			.findLast(
+				entry =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					(!message ||
+						(sessionMessagePersistenceKey(entry.message) === persistenceKey &&
+							entry.message.errorMessage === message.errorMessage &&
+							sameMessageContent(entry.message, message))),
+			);
+		if (message && !rejectedEntry) throw new Error("Rejected image-input failure is missing from session history");
+		if (
+			rejectedEntry?.type !== "message" ||
+			rejectedEntry.message.role !== "assistant" ||
+			!AIError.isRejectedImageInput(rejectedEntry.message)
+		)
+			return 0;
+		// Provider input indices address the serialized request, not transcript entries.
+		// Only the prefix sent before this failure was rejected; new attachments
+		// after the terminal entry must remain usable on the next prompt.
+		const { removed } = await this.dropImages(rejectedEntry.id);
+		if (removed === 0) return 0;
+		this.#host.emitNotice(
+			"warning",
+			"The provider rejected an image input. Images were removed from this session's active history; text and tool results were kept. You can continue in this session and reattach valid images within the provider's limits. The failed request was not resent.",
+			"image-input-recovery",
+		);
+		return removed;
 	}
 
 	/**
@@ -3034,7 +3049,7 @@ export class SessionMaintenance {
 		// compaction availability) so both the media-exclusion decision below and
 		// the terminal dead-end check further down agree with each other.
 		const explicitMediaRejection =
-			payloadRejection && hasExplicitMediaRejectionEvidence(assistantMessage.errorMessage);
+			payloadRejection && AIError.hasExplicitMediaRejectionEvidence(assistantMessage.errorMessage);
 		// `payloadRejection` alone is not sufficient reason to exclude media
 		// compaction methods (snapcompact): a *usage-backed* overflow proves the
 		// rejection is a genuine token-context problem, not a byte/media budget

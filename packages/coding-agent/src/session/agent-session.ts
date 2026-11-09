@@ -4944,6 +4944,26 @@ export class AgentSession implements SettingsScope {
 			// outside the session transcript (issue #6177).
 			logProviderTurnError(msg);
 
+			// Invalid image bytes cannot be repaired by retry/fallback/compaction.
+			// Media-budget errors retain their existing maintenance path when there
+			// are no actual image inputs to remove (including usage-backed overflows).
+			const imageInputRejection = AIError.classifyImageInputRejection(msg);
+			if (imageInputRejection) {
+				await this.#recovery.persistTerminalEmptyErrorTurn(msg);
+				const removed = await this.#maintenance.recoverRejectedImageInputs(msg);
+				if (removed > 0 || imageInputRejection === "invalid") {
+					this.#prunedTerminalFailure = msg;
+					this.#lastSuccessfulYieldToolCallId = undefined;
+					this.#queuedMessageDrainBlocked = true;
+					this.#resetSessionStopContinuationState();
+					this.#clearPendingSessionStopContinuations();
+					await this.#recovery.onErrorSettledWithoutRetry(msg, COMPACTION_CHECK_NONE);
+					this.#recovery.resolveRetry();
+					await emitAgentEndNotification();
+					return;
+				}
+			}
+
 			// Invalidate GitHub Copilot credentials on a hard auth failure (401, or an
 			// expired/revoked token) so stale tokens aren't reused on the next request.
 			// Account usage caps and concurrency caps leave the credential valid: the
@@ -8236,6 +8256,7 @@ export class AgentSession implements SettingsScope {
 			});
 			return;
 		}
+		await this.#maintenance.recoverRejectedImageInputs();
 		this.#noteUserTurn();
 		this.#todo.resetCycle();
 		this.#resetPromptMaintenanceState();
@@ -8970,9 +8991,13 @@ export class AgentSession implements SettingsScope {
 			// below; re-running the full post-turn check on resume can synchronously
 			// rewrite/re-render old context before the new prompt starts.
 			const lastAssistant = this.#findLastAssistantMessage();
+			// Old sessions may still carry images behind a terminal rejection. This
+			// cleanup is independent of optional compaction and precedes new attachments.
+			await this.#maintenance.recoverRejectedImageInputs();
 			if (
 				lastAssistant &&
 				!options?.skipCompactionCheck &&
+				AIError.classifyImageInputRejection(lastAssistant) !== "invalid" &&
 				(lastAssistant.stopReason === "error" || lastAssistant.stopReason === "length")
 			) {
 				await this.#maintenance.checkCompaction(lastAssistant, false, false);

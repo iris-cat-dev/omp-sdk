@@ -644,7 +644,21 @@ export class SessionEntryBodyCache {
 	#unwrap(value: unknown): unknown {
 		if (typeof value !== "object" || value === null) return value;
 		const tracked = this.#paths.get(value);
-		return tracked ? this.#source(tracked.handle, tracked.path) : value;
+		if (tracked) return this.#source(tracked.handle, tracked.path);
+		// Filter/spread build ordinary containers whose children can still be path
+		// facades. Storing one into its own backing path makes that view recursive.
+		// Resolve nested facades before assignment; copy only changed containers.
+		const source = value as Record<string, unknown>;
+		let copy: object | undefined;
+		for (const key in source) {
+			if (!Object.hasOwn(source, key)) continue;
+			const child = source[key];
+			const unwrapped = this.#unwrap(child);
+			if (unwrapped === child) continue;
+			copy ??= Array.isArray(value) ? value.slice() : { ...source };
+			Reflect.set(copy, key, unwrapped);
+		}
+		return copy ?? value;
 	}
 	#track(value: unknown, handle: ColdHandle, path: ColdPath): unknown {
 		if (typeof value !== "object" || value === null) return value;

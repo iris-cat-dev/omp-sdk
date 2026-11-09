@@ -1075,6 +1075,107 @@ export function isPayloadRejection(message: AssistantMessage): boolean {
 	return matchesPayloadRejectionText(errorMessage);
 }
 
+/**
+ * Concrete media-limit wording in a payload-rejection error (e.g.
+ * `request_too_large: too many images`, `image count exceeds the limit of
+ * 20`). `ambiguousPayloadRejection` (dual `ContextOverflow` + `PayloadRejected`)
+ * only catches text that *also* matches a generic numeric-limit pattern — a
+ * digit-free media rejection like the first example sails through as
+ * non-ambiguous. That text is still definitive media-budget evidence: token
+ * compaction can't raise a provider's image-count limit, and some methods
+ * (snapcompact) *add* image frames, making it worse. Such rejections must
+ * stay on the terminal payload-dead-end path regardless of compaction
+ * availability (#11482).
+ *
+ * Deliberately narrower than matching bare "images"/"media"/"vision"/"frames"/
+ * "pixels" anywhere in the text: a custom provider's error that merely names a
+ * vision model (`llava-vision`) or an unrelated `Content-Type` (`media type
+ * application/json`) is not evidence the *request* was rejected for a media
+ * budget — treating it as such would permanently dead-end an unknown-window
+ * session that ordinary compaction could actually recover (#11482). Require
+ * the noun to co-occur with a count/limit signal instead — covering the
+ * common phrasings: "too many images", "image count"/"image limit", "limit
+ * of N images", "maximum (of N) images", "number/count of images",
+ * "images exceeds ... maximum", and per-image size/dimension rejections
+ * like "image is too large" or "image dimensions exceed 8000 pixels"
+ * (#11482).
+ */
+const PAYLOAD_MEDIA_LIMIT_EVIDENCE_PATTERN =
+	/\btoo many (?:images?|frames?|pixels?)\b|\b(?:images?|frames?|pixels?)\s*(?:count|limit)\b|\blimit of \d+\s*(?:images?|frames?|pixels?)\b|\bmaximum(?: of \d+)? (?:images?|frames?|pixels?)\b|\b(?:number|count) of (?:images?|frames?|pixels?)\b|\bat most \d+\s*(?:images?|frames?|pixels?)\b|\b(?:images?|frames?|pixels?)\b[^\n.;]{0,20}\bexceeds?\b[^\n.;]{0,20}\bmaximum\b|\b(?:images?|frames?) (?:is |are )?too (?:large|big)\b|\b(?:images?|frames?) (?:size|dimensions?|resolution)\b[^\n.;]{0,80}\b(?:exceeds?|maximum|limit|too large|too big|must not exceed|must be (?:less|smaller) than)\b/i;
+export function hasExplicitMediaRejectionEvidence(errorMessage: string | undefined): boolean {
+	return errorMessage !== undefined && PAYLOAD_MEDIA_LIMIT_EVIDENCE_PATTERN.test(errorMessage);
+}
+
+/** Definitive image-input rejection, not a general bad request or image-generation failure. */
+export function classifyImageInputRejection(message: AssistantMessage): "invalid" | "budget" | undefined {
+	if (message.stopReason !== "error" || !message.errorMessage) return undefined;
+	const text = message.errorClassificationMessage ?? message.errorMessage;
+	const embeddedStatus = /(?:^\s*|\bHTTP\s+|\b(?:error\s+code|status(?:[_ ]?code)?)\s*["':=]*\s*)([1-5]\d{2})\b/i.exec(
+		text,
+	);
+	const errorStatus =
+		message.errorStatus ??
+		statusFromId(message.errorId) ??
+		status({ message: text }) ??
+		(embeddedStatus ? Number(embeddedStatus[1]) : undefined);
+	if (errorStatus !== undefined && errorStatus !== 400 && errorStatus !== 413 && errorStatus !== 422) return undefined;
+	const errorId = classifyMessage(message);
+	// Legacy text flags can mistake input[401] for an auth status. An explicit
+	// client-error status wins over that numeric hint; actual auth wording does not.
+	if ((errorStatus === undefined && is(errorId, Flag.AuthFailed)) || is(errorId, Flag.UsageLimit)) return undefined;
+	if (
+		/\b(?:unauthorized|forbidden|authentication|permission denied|access denied|auth[_ -]?unavailable|no auth available|(?:invalid|no)[_ -]?api[_ -]?key)\b/i.test(
+			text,
+		)
+	)
+		return undefined;
+	if (
+		/\b(?:service[_ -]?unavailable|server[_ -]?error|internal[_ -]?error|overloaded|temporar(?:y|ily)[_ -]?unavailable|rate[_ -]?limit|too many requests)\b/i.test(
+			text,
+		)
+	)
+		return undefined;
+	if (/\b(?:image[_ -]?generation|generat(?:e|ed|ing)\s+(?:an?\s+)?image)\b/i.test(text)) return undefined;
+	if (
+		/\b(?:invalid|unsupported)\s+image\s+model\b/i.test(text) ||
+		/\b(?:model|endpoint)\b[^\n.;]{0,80}\b(?:does not support|doesn't support|cannot accept|can't accept)\b[^\n.;]{0,40}\b(?:images?|vision)\b/i.test(
+			text,
+		) ||
+		/\b(?:unsupported\s+image(?:[_ -]input)?|image[_ -]input\s+(?:is\s+)?(?:unsupported|not supported))\b[^\n.;]{0,60}\b(?:model|endpoint)\b/i.test(
+			text,
+		)
+	)
+		return undefined;
+	if (
+		(hasExplicitMediaRejectionEvidence(text) &&
+			/\b(?:too many|too large|too big|exceeds?|maximum|limit|at most|must not exceed|must be (?:less|smaller) than)\b/i.test(
+				text,
+			)) ||
+		/\b(?:invalid|unsupported)\s+image\s+(?:size|resolution|dimensions?|aspect\s+ratio|count)\b/i.test(text)
+	)
+		return "budget";
+	return /\b(?:uploaded|provided|input)\b[^\n.]{0,100}\b(?:invalid|unsupported|corrupt(?:ed)?)\s+image\b/i.test(
+		text,
+	) ||
+		/\b(?:invalid|unsupported|corrupt(?:ed)?)\s+image(?:[_ -](?:input|data|format|encoding))?\b/i.test(text) ||
+		/\bimage[_ -](?:input|data|format|encoding)\b[^\n.]{0,80}\b(?:invalid|unsupported|corrupt(?:ed)?)\b/i.test(
+			text,
+		) ||
+		/\bimage(?:[_ -](?:input|data|format|encoding))?\s+(?:is\s+)?(?:invalid|unsupported|corrupt(?:ed)?)\b/i.test(
+			text,
+		) ||
+		/\bimage[_ -]format\s+(?:is\s+)?not\s+supported\b/i.test(text) ||
+		/\b(?:cannot|could not|unable to|failed to)\s+(?:decode|parse)\s+(?:the\s+)?image\b/i.test(text) ||
+		/\bimage\b[^\n.]{0,80}\b(?:cannot|could not|failed to)\s+be\s+decoded\b/i.test(text)
+		? "invalid"
+		: undefined;
+}
+
+/** Whether a provider definitively rejected an image input rather than the model or service. */
+export function isRejectedImageInput(message: AssistantMessage): boolean {
+	return classifyImageInputRejection(message) !== undefined;
+}
+
 /** Dual-flagged 413 (PayloadRejected + ContextOverflow) with no provider-reported token excess (#9235).
  *  The co-flag means a different provider's larger byte/media budget may accept the request.
  *  Usage-backed overflows are authoritative window excesses and never ambiguous. */

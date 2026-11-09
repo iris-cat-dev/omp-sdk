@@ -12,6 +12,7 @@
 - Added Node.js-compatible model transport and authentication storage adapters for headless SDK hosts.
 - Added per-session and exact per-provider proxy policies across model, OAuth, usage, discovery, media, judgment, compaction, and WebSocket traffic without interrupting active responses.
 - Added optional host-assigned user-message identities for correlating submissions with native records.
+- Added image-input rejection classification that distinguishes invalid images and explicit media budgets from authentication, model-capability, and service failures.
 
 ### Changed
 

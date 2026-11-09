@@ -266,6 +266,67 @@ describe("indexed historical bodies", () => {
 		}
 	});
 
+	it("persists filtered cold arrays and nested borrowed blocks without recursive path facades", async () => {
+		const { directory, file } = await fixture();
+		await fs.appendFile(
+			file,
+			`${JSON.stringify({
+				type: "custom_message",
+				id: "filtered",
+				parentId: "reply",
+				timestamp: "2026-01-01T00:00:05Z",
+				customType: "note",
+				display: true,
+				content: [
+					{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+					{ type: "text", text: "retained first" },
+					{ type: "text", text: "retained second" },
+				],
+				details: {},
+			})}\n`,
+		);
+		const manager = await SessionManager.open(file, directory, undefined, { suppressBreadcrumb: true });
+		try {
+			const entry = manager.getEntry("filtered");
+			if (entry?.type !== "custom_message" || !Array.isArray(entry.content))
+				throw new Error("Expected cold custom content");
+			entry.content = entry.content.filter(part => part.type !== "image");
+			expect(entry.content).toEqual([
+				{ type: "text", text: "retained first" },
+				{ type: "text", text: "retained second" },
+			]);
+			expect("text" in entry.content[0]!).toBe(true);
+			entry.details = { copied: { blocks: [entry.content[0]] } };
+			const details = entry.details as Record<string, unknown>;
+			details.assigned = { block: entry.content[1] };
+			Object.defineProperty(details, "defined", {
+				value: { block: entry.content[0] },
+				enumerable: true,
+				configurable: true,
+				writable: true,
+			});
+			await manager.rewriteEntries();
+			const reopened = await SessionManager.open(file, directory, undefined, { suppressBreadcrumb: true });
+			try {
+				const persisted = reopened.getEntry("filtered");
+				if (persisted?.type !== "custom_message") throw new Error("Expected persisted custom content");
+				expect(persisted.content).toEqual([
+					{ type: "text", text: "retained first" },
+					{ type: "text", text: "retained second" },
+				]);
+				expect(persisted.details).toEqual({
+					copied: { blocks: [{ type: "text", text: "retained first" }] },
+					assigned: { block: { type: "text", text: "retained second" } },
+					defined: { block: { type: "text", text: "retained first" } },
+				});
+			} finally {
+				await reopened.close();
+			}
+		} finally {
+			await manager.close();
+		}
+	});
+
 	it("persists a cold-body edit made after an atomic pass has serialized it", async () => {
 		const { directory, file } = await fixture();
 		const storage = new PausedRewriteStorage();
