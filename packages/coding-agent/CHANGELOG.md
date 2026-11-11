@@ -5,6 +5,7 @@
 ### Added
 
 - Added mandatory SDK sandbox sessions with a pinned native file namespace, fixed read/write/list capabilities, literal user prompt and model preference preservation, immutable tool admission, provider-request identity/path isolation, durable resume policy, and fail-closed Node SDK compatibility checks. Trusted gateways have a separate bounded binary filesystem entry; ordinary Desktop sessions retain their existing capabilities.
+- Added opt-in `sandbox_js` with fresh QuickJS-NG WASM guests, descriptor-bound UTF-8 file APIs, hard memory/CPU/output limits and cancellation; added `sandbox_fetch` for bounded arbitrary public HTTP/HTTPS requests with DNS/redirect validation and pinned connections. Guest networking reuses the same transport. File-only sessions remain the default; capability changes require a new conversation and Node RPC sandbox version 2.
 - Added a headless Node.js 24+ SDK backend with persistent sessions, native tools, extension loading, full RPC hosting, and a shared worker host; Bun CLI behavior remains available.
 - Added a compact Node SDK profile for remote models and native tools without bundled local embedding, offline speech, or tiny helper inference runtimes.
 - Added Desktop-specific Node SDK builds with a reduced extension import surface while retaining independent generic SDK builds.

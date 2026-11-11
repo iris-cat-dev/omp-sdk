@@ -26,7 +26,7 @@ import { ProxyPolicyController, type ProxyPolicy, setDefaultProxyPolicyControlle
 import { randomUUID } from "node:crypto";
 
 export * from "./modes/rpc/rpc-mode";
-export const NODE_RPC_SANDBOX_VERSION = 1;
+export const NODE_RPC_SANDBOX_VERSION = 2;
 export { openSandboxFs, type SandboxFs } from "./sandbox-fs";
 
 initializeNodeSdk(import.meta.url);

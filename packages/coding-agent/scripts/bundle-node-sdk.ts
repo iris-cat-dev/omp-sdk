@@ -419,6 +419,7 @@ export async function bundleNodeSdk(outDir?: string, buildTarget: NodeSdkBuildTa
 			naming: { entry: "[dir]/[name].mjs", chunk: "chunks/[name]-[hash].mjs" },
 			external: [
 				"@oh-my-pi/pi-natives",
+				"@jitl/quickjs-ng-wasmfile-release-sync",
 				...Object.values(runtimeModules),
 				"@huggingface/transformers",
 				"fastembed",

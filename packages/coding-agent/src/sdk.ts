@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { openSandboxFs, sandboxTools, SANDBOX_TOOL_NAMES, buildSandboxSystemPrompt, type AgentSandbox } from "./sandbox";
+import { openSandboxFs, sandboxTools, buildSandboxSystemPrompt, type AgentSandbox } from "./sandbox";
 import { restoreOwnedServices } from "./launch/services";
 import {
 	Agent,
@@ -1805,15 +1805,19 @@ export function createAutoLearnCaptureRunner(
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	if ("sandboxPolicy" in options) throw new Error("Sandbox policy is private to the SDK");
 	if (options.sandbox) {
-		const files = await openSandboxFs(options.sandbox);
+		const sandboxPolicy = Object.freeze({ root: options.sandbox.root, javascript: options.sandbox.javascript, network: options.sandbox.network });
+		const files = await openSandboxFs(sandboxPolicy);
 		try {
-			const sourceSettings = await (options.settings ?? options.settingsManager ?? Settings.loadIsolated({ cwd: options.sandbox.root, agentDir: options.agentDir ?? getAgentDir(), globalOnly: true }));
+			const sourceSettings = await (options.settings ?? options.settingsManager ?? Settings.loadIsolated({ cwd: sandboxPolicy.root, agentDir: options.agentDir ?? getAgentDir(), globalOnly: true }));
+			const tools = sandboxTools(files, sandboxPolicy);
+			// Sandbox factories use ToolDefinition's signal-first signature, not legacy CustomTool callbacks.
+			for (const tool of tools) Object.defineProperty(tool, "__isToolDefinition", { value: true });
 			const result = await createAgentSessionWithPolicy({ ...options, sandbox: undefined,
-				sandboxPolicy: Object.freeze({ root: options.sandbox.root }),
-				cwd: options.sandbox.root, settings: sourceSettings.overlay({ "memory.backend": "off", "autolearn.enabled": false }), settingsManager: undefined, bindProcessState: false,
-				customTools: sandboxTools(files), toolNames: [...SANDBOX_TOOL_NAMES],
+				sandboxPolicy,
+				cwd: sandboxPolicy.root, settings: sourceSettings.overlay({ "memory.backend": "off", "autolearn.enabled": false }), settingsManager: undefined, bindProcessState: false,
+				customTools: tools, toolNames: tools.map(tool => tool.name),
 				restrictToolNames: true, allowRestrictedCustomTools: true,
-				systemPrompt: buildSandboxSystemPrompt(typeof options.systemPrompt === "string" ? options.systemPrompt : Array.isArray(options.systemPrompt) ? options.systemPrompt.join("\n") : undefined), appendSystemPrompt: undefined,
+				systemPrompt: buildSandboxSystemPrompt(typeof options.systemPrompt === "string" ? options.systemPrompt : Array.isArray(options.systemPrompt) ? options.systemPrompt.join("\n") : undefined, sandboxPolicy), appendSystemPrompt: undefined,
 				systemPromptTemplate: undefined, customSystemPrompt: undefined,
 				skills: [], rules: [], contextFiles: [], noContextFiles: true,
 				promptTemplates: [], slashCommands: [], workspaceTree: { rootPath: ".", rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
@@ -2034,6 +2038,9 @@ async function createAgentSessionScoped(options: InternalCreateAgentSessionOptio
 		if (savedSandbox) {
 			if (savedEntries.some((entry, index) => index < savedSandboxIndex && (entry.type === "message" || entry.type === "session_init"))) throw new Error("Cannot resume an unrestricted transcript in a sandbox");
 			if (savedSandbox.type !== "custom" || !savedSandbox.data || typeof savedSandbox.data !== "object" || !("root" in savedSandbox.data) || savedSandbox.data.root !== options.sandboxPolicy.root) throw new Error("Saved sandbox root does not match");
+			const javascript = "javascript" in savedSandbox.data ? savedSandbox.data.javascript : undefined;
+			const network = "network" in savedSandbox.data ? savedSandbox.data.network : undefined;
+			if ((javascript === undefined ? false : javascript) !== (options.sandboxPolicy.javascript ?? false) || network !== options.sandboxPolicy.network) throw new Error("Saved sandbox capabilities do not match; create a new session to change permissions");
 		} else {
 			if (sessionManager.getEntries().some(entry => entry.type === "message" || entry.type === "session_init")) throw new Error("Cannot resume an unrestricted transcript in a sandbox");
 			sessionManager.appendCustomEntry("sandbox-policy", options.sandboxPolicy);

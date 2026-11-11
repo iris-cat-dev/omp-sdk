@@ -109,4 +109,36 @@ describe.skipIf(process.platform === "win32")("SDK mandatory sandbox lifecycle",
 		await expect(createAgentSession({ ...options, sessionManager: legacy })).rejects.toThrow("unrestricted transcript");
 		await legacy.close();
 	});
+	test("explicit JavaScript survives tool selection and fresh sessions without granting host execution", async () => {
+		const { root, create } = await fixture();
+		const session = await create({ sandbox: { root, javascript: true } });
+		expect(session.agent.state.tools.map(tool => tool.name).sort()).toEqual(["sandbox_js", ...names]);
+		await session.setActiveToolsByName(["sandbox_js"]);
+		const javascript = session.getToolByName("sandbox_js");
+		if (!javascript) throw new Error("Authorized JavaScript is unavailable");
+		const result = await javascript.execute("compute", { code: "return {value: [12, 30].reduce((a, b) => a + b, 0), process: typeof process, fetch: typeof fetch};" }, undefined, () => {});
+		expect(JSON.parse(result.content.filter(item => item.type === "text").map(item => item.text).join(""))).toEqual({ result: { value: 42, process: "undefined", fetch: "undefined" }, logs: [] });
+		await expect(session.setActiveToolsByName(["eval"])).rejects.toThrow("Sandbox");
+		await session.newSession();
+		await session.setActiveToolsByName(["sandbox_read", "sandbox_js"]);
+		const afterReset = session.getToolByName("sandbox_js");
+		if (!afterReset) throw new Error("Fresh session lost JavaScript grant");
+		const freshResult = await afterReset.execute("fresh-compute", { code: "return 6 * 7;" });
+		expect(JSON.parse(freshResult.content.filter(item => item.type === "text").map(item => item.text).join("")).result).toBe(42);
+	});
+	test("durable capability changes require a new conversation, while unchanged grants resume", async () => {
+		const { directory, root, options, create } = await fixture();
+		const journalDir = path.join(directory, "capability-journals");
+		const sandbox = { root, javascript: true, network: "public" as const };
+		const session = await create({ sandbox, sessionManager: SessionManager.create(root, journalDir) });
+		await session.sessionManager.ensureOnDisk(); await session.sessionManager.flush();
+		const sessionFile = session.sessionFile;
+		if (!sessionFile) throw new Error("Expected capability journal");
+		await session.dispose();
+		const resumed = await create({ sandbox, sessionManager: await SessionManager.open(sessionFile, journalDir) });
+		expect(resumed.agent.state.tools.map(tool => tool.name).sort()).toEqual(["sandbox_fetch", "sandbox_js", ...names]);
+		const changed = await SessionManager.open(sessionFile, journalDir);
+		try { await expect(createAgentSession({ ...options, sandbox: { root }, sessionManager: changed })).rejects.toThrow("capabilities do not match"); }
+		finally { await changed.close(); }
+	});
 });

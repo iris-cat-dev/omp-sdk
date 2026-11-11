@@ -20,6 +20,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
+import type { AgentSandbox } from "../sandbox-fs";
 
 import {
 	type AfterToolCallContext,
@@ -922,7 +923,7 @@ export class AgentSession implements SettingsScope {
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
 	readonly proxyController: ProxyPolicyController;
-	readonly sandbox?: { readonly root: string };
+	readonly sandbox?: Readonly<AgentSandbox>;
 	/** Session-start policy, independent of the selected project memory backend. */
 	readonly memoryEnabled: boolean;
 	#costGate: CostGate;
@@ -2486,7 +2487,10 @@ export class AgentSession implements SettingsScope {
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			toolRegistry: config.toolRegistry,
-			allowedToolNames: this.sandbox ? { sandbox_read: true, sandbox_write: true, sandbox_list: true } : undefined,
+			allowedToolNames: this.sandbox ? { sandbox_read: true, sandbox_write: true, sandbox_list: true,
+				...(this.sandbox.javascript ? { sandbox_js: true } : {}),
+				...(this.sandbox.network === "public" ? { sandbox_fetch: true } : {}),
+			} : undefined,
 			createVibeTools: config.createVibeTools,
 			createThinkTool: config.createThinkTool,
 			builtInToolNames: config.builtInToolNames,

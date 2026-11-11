@@ -4,7 +4,11 @@ import * as path from "node:path";
 import * as natives from "@oh-my-pi/pi-natives";
 
 export const SANDBOX_FS_VERSION = 1;
-export interface AgentSandbox { root: string }
+export interface AgentSandbox {
+	root: string;
+	javascript?: boolean;
+	network?: "public";
+}
 export interface SandboxFileStat { isDirectory: boolean; size: number; modifiedAt: number }
 export interface SandboxFileEntry extends SandboxFileStat { name: string }
 export interface SandboxFs {

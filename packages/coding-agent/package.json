@@ -596,6 +596,7 @@
 	},
 	"dependencies": {
 		"@babel/parser": "catalog:",
+		"@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
 		"@oh-my-pi/omp-stats": "catalog:",
 		"@oh-my-pi/omptype": "catalog:",
 		"@oh-my-pi/pi-agent-core": "catalog:",
@@ -621,6 +622,7 @@
 		"axe-core": "4.13.0",
 		"core-js": "3.51.0",
 		"koffi": "^2.15.1",
+		"quickjs-emscripten-core": "0.32.0",
 		"puppeteer-core": "catalog:"
 	},
 	"devDependencies": {

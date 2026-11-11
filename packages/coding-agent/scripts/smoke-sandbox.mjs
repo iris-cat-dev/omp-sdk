@@ -12,7 +12,7 @@ if (!sdkDirectory || !model) throw new Error("Usage: node scripts/smoke-sandbox.
 const load = createRequire(import.meta.url);
 const sdk = load(path.resolve(sdkDirectory, "sdk.mjs"));
 const rpc = load(path.resolve(sdkDirectory, "rpc.mjs"));
-assert.equal(rpc.NODE_RPC_SANDBOX_VERSION, 1, "Old SDK must fail closed");
+assert([1, 2].includes(rpc.NODE_RPC_SANDBOX_VERSION), "Old or unknown SDK must fail closed");
 const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "omp-sandbox-smoke-")));
 const root = path.join(base, "root");
 const agentDir = path.join(base, "agent");
