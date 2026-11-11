@@ -922,6 +922,7 @@ export class AgentSession implements SettingsScope {
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
 	readonly proxyController: ProxyPolicyController;
+	readonly sandbox?: { readonly root: string };
 	/** Session-start policy, independent of the selected project memory backend. */
 	readonly memoryEnabled: boolean;
 	#costGate: CostGate;
@@ -1987,6 +1988,7 @@ export class AgentSession implements SettingsScope {
 				isHiddenUserCompanion(previous) && (isHiddenUserCompanion(next) || isUserQueuedMessage(next)),
 		);
 		this.sessionManager = config.sessionManager;
+		this.sandbox = config.sandbox ? Object.freeze({ ...config.sandbox }) : undefined;
 		this.settings = config.settings;
 		if (config.autoApprove) cfgToolsApprovalMode.override(this.settings, "yolo");
 		this.#ownsCostGate = config.costGate === undefined;
@@ -2484,6 +2486,7 @@ export class AgentSession implements SettingsScope {
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			toolRegistry: config.toolRegistry,
+			allowedToolNames: this.sandbox ? { sandbox_read: true, sandbox_write: true, sandbox_list: true } : undefined,
 			createVibeTools: config.createVibeTools,
 			createThinkTool: config.createThinkTool,
 			builtInToolNames: config.builtInToolNames,
@@ -8332,7 +8335,7 @@ export class AgentSession implements SettingsScope {
 		submittedAt: number,
 		outcome: PromptDispatchOutcome,
 	): Promise<boolean> {
-		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		const expandPromptTemplates = !this.sandbox && (options?.expandPromptTemplates ?? true);
 		// Slash/custom-command handling below rewrites `text`; keep the original
 		// so a dropped prompt is handed back exactly as the user typed it.
 		const typedText = text;
@@ -8363,12 +8366,12 @@ export class AgentSession implements SettingsScope {
 
 		// Expand file-based prompt templates if requested
 		const templated = expandPromptTemplates ? expandPromptTemplate(text, [...this.#promptTemplates]) : text;
-		const expandedText = options?.synthetic ? templated : this.#modelMentions.expandMentions(templated);
+		const expandedText = options?.synthetic || this.sandbox ? templated : this.#modelMentions.expandMentions(templated);
 
 		// Magic keywords (see modes/magic-keywords.ts): append hidden system notices after the
 		// user's message that steer this turn. User-authored prompts only — synthetic /
 		// agent-initiated turns never trigger them.
-		const keywordNotices = options?.synthetic ? [] : this.#createMagicKeywordNotices(expandedText);
+		const keywordNotices = options?.synthetic || this.sandbox ? [] : this.#createMagicKeywordNotices(expandedText);
 
 		// A `^` mention in a non-synthetic prompt mints a new alias. The hidden
 		// session-agent notice (which tells the model about the alias) must ride
@@ -9048,7 +9051,7 @@ export class AgentSession implements SettingsScope {
 			this.#pendingNextTurnMessages = [];
 
 			// Auto-read @filepath mentions
-			const fileMentions = extractFileMentions(expandedText);
+			const fileMentions = this.sandbox ? [] : extractFileMentions(expandedText);
 			if (fileMentions.length > 0) {
 				const fileMentionMessages = await generateFileMentionMessages(fileMentions, this.sessionManager.getCwd(), {
 					autoResizeImages: cfgImagesAutoResize.get(this.settings),
@@ -11597,8 +11600,9 @@ export class AgentSession implements SettingsScope {
 				}
 				await this.sessionManager.newSession({
 					...options,
-					additionalDirectories: cfgWorkspaceAdditionalDirectories.get(this.settings),
+					additionalDirectories: this.sandbox ? [] : cfgWorkspaceAdditionalDirectories.get(this.settings),
 				});
+				if (this.sandbox) this.sessionManager.appendCustomEntry("sandbox-policy", this.sandbox);
 				this.#bash.markSessionTransition(bashTransition);
 				// The new session owns the transcript from here, so the previous
 				// conversation's advisor spend is retired with it. Clearing at the commit
@@ -12766,6 +12770,7 @@ export class AgentSession implements SettingsScope {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; useUserShell?: boolean; pty?: BashPtyOptions },
 	): Promise<BashResult> {
+		if (this.sandbox) throw new Error("Sandbox command execution denied");
 		if (this.#userStopped) throw new Error("Bash execution is stopped; send a new prompt to resume");
 		return this.#bash.executeBash(command, onChunk, options);
 	}
@@ -13298,6 +13303,7 @@ export class AgentSession implements SettingsScope {
 			onModelFallback?: (warning: string) => void;
 		},
 	): Promise<boolean> {
+		if (this.sandbox) throw new Error("Sandbox session switching denied; resume through the host with the persisted boundary");
 		const explicitModel = options?.model;
 		if (explicitModel && !this.#modelRegistry.hasConfiguredAuth(explicitModel)) {
 			throw new Error(`No API key for ${explicitModel.provider}/${explicitModel.id}`);

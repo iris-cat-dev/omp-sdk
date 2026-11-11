@@ -1918,7 +1918,18 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		process.exit(0);
 	};
 
-	const getAvailableCommands = async () => buildAvailableSlashCommands(session);
+	const SANDBOX_RPC_COMMANDS: Partial<Record<RpcCommand["type"], true>> = {
+		negotiate_protocol: true, prompt: true, steer: true, follow_up: true,
+		abort: true, abort_and_prompt: true, abort_and_restore_queue: true,
+		get_state: true, get_messages: true, get_messages_page: true, get_entries: true, get_session_stats: true,
+		get_prompt_context: true, get_available_models: true, get_available_commands: true,
+		set_model: true, set_thinking_level: true, set_approval_mode: true,
+		set_auto_compaction: true, compact: true, append_session_annotation: true,
+		set_subagent_subscription: true, get_subagents: true, get_login_providers: true,
+		set_proxy_policy: true, new_session: true,
+		set_event_filter: true, get_runtime_resources: true, release_runtime_resource: true,
+	};
+	const getAvailableCommands = async () => session.sandbox ? [] : buildAvailableSlashCommands(session);
 	const reloadPluginState = async () => {
 		const cwd = session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
@@ -1966,7 +1977,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				await session.followUp(text, images, { clientMessageId: command.clientMessageId });
 				return "admitted";
 			}
-			if (command.type === "prompt") {
+			if (!session.sandbox && command.type === "prompt") {
 				if (!ticket) return "cancelled";
 				const skillResult = await dispatchRpcSkillPrompt({
 					ticket,
@@ -2073,6 +2084,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// Handle a single command
 	const handleCommandImpl = async (command: RpcCommand): Promise<RpcResponse> => {
 		const id = command.id;
+		if (session.sandbox && !Object.hasOwn(SANDBOX_RPC_COMMANDS, command.type)) return error(id, command.type, "Sandbox runtime operation denied");
 
 		switch (command.type) {
 			case "negotiate_protocol": {
@@ -2462,6 +2474,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				if (typeof command.customType !== "string" || command.customType.length === 0 || !("data" in command)) {
 					return error(id, "append_session_annotation", "Session annotation requires customType and JSON data", "invalid_annotation");
 				}
+				if (command.customType === "sandbox-policy") return error(id, "append_session_annotation", "Sandbox policy annotations are SDK-owned", "invalid_annotation");
 				const entryId = session.sessionManager.appendCustomEntry(command.customType, command.data);
 				await session.sessionManager.ensureOnDisk();
 				await session.sessionManager.flush();

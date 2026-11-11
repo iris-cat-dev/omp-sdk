@@ -368,11 +368,13 @@ export async function bundleNodeSdk(outDir?: string, buildTarget: NodeSdkBuildTa
 		const hostEntry = path.join(virtualRoot, "host.ts");
 		const rpcEntry = path.join(virtualRoot, "rpc.ts");
 		const pluginsEntry = path.join(virtualRoot, "plugins.ts");
+		const sandboxEntry = path.join(virtualRoot, "sandbox.ts");
 		files[sdkEntry] = `export * from ${JSON.stringify(path.join(packageDir, "src", "node-sdk.ts"))};`;
 		files[hostEntry] = `import ${JSON.stringify(path.join(packageDir, "src", "node-cli.ts"))};`;
 		files[rpcEntry] = `export * from ${JSON.stringify(path.join(packageDir, "src", "node-rpc.ts"))};`;
 		files[pluginsEntry] = `export * from ${JSON.stringify(path.join(packageDir, "src", "node-plugin.ts"))};`;
-		const entrypoints = [sdkEntry, hostEntry, rpcEntry, pluginsEntry];
+		files[sandboxEntry] = `export * from ${JSON.stringify(path.join(packageDir, "src", "sandbox-fs.ts"))};`;
+		const entrypoints = [sdkEntry, hostEntry, rpcEntry, pluginsEntry, sandboxEntry];
 		const modules: Record<string, string> = {};
 		const outputNames = new Set<string>();
 		const entries = await collectBundledPiEntries();

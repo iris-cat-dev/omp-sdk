@@ -171,6 +171,8 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
+	/** Immutable creation-time model-capability boundary. */
+	sandbox?: { readonly root: string };
 	proxyController?: ProxyPolicyController;
 	/**
 	 * Live extension-root policy inherited from the owning session. Subagents use

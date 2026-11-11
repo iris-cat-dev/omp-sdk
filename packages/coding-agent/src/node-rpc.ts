@@ -1,6 +1,9 @@
 import "./node-platform";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createRequire } from "node:module";
+import type { ModelRegistry, ProviderConfigInput } from "./config/model-registry";
+import type { AgentSandbox } from "./sandbox";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -23,6 +26,8 @@ import { ProxyPolicyController, type ProxyPolicy, setDefaultProxyPolicyControlle
 import { randomUUID } from "node:crypto";
 
 export * from "./modes/rpc/rpc-mode";
+export const NODE_RPC_SANDBOX_VERSION = 1;
+export { openSandboxFs, type SandboxFs } from "./sandbox-fs";
 
 initializeNodeSdk(import.meta.url);
 
@@ -41,6 +46,9 @@ export interface NodeRpcHostOptions {
 	disallowedTools?: string[];
 	configFiles?: string[];
 	desktopPluginPrompts?: boolean;
+	sandbox?: AgentSandbox;
+	/** Trusted Desktop local-model provider adapter, never a model extension. */
+	modelBridgeExtension?: string;
 }
 
 const supportedParsedOptions: Readonly<Record<string, true>> = {
@@ -97,7 +105,7 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 			throw new Error(`Node SDK backend does not support the CLI option '${key}'`);
 		}
 	}
-	for (const check of await checkPluginStartup(options.cwd, { disableFailed: true })) {
+	for (const check of options.sandbox ? [] : await checkPluginStartup(options.cwd, { disableFailed: true })) {
 		if (check.disabled) {
 			console.error(`Disabled failed plugin ${check.name} (${check.scope}): ${check.errors.join("; ")}`);
 		}
@@ -106,7 +114,8 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 	const settings = await Settings.init({
 		cwd: options.cwd,
 		agentDir,
-		configFiles: [...(options.configFiles ?? []), ...(parsed.config ?? [])],
+		globalOnly: options.sandbox !== undefined,
+		configFiles: options.sandbox ? [] : [...(options.configFiles ?? []), ...(parsed.config ?? [])],
 	});
 	// RPC bypasses CLI startup, but tool prompts still use its themed control labels.
 	await initTheme(
@@ -161,6 +170,21 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 	};
 	const result = await createAgentSession({
 		proxyController,
+		sandbox: options.sandbox,
+		setupModelRegistry: options.sandbox && options.modelBridgeExtension ? async registry => {
+			if (!path.isAbsolute(options.modelBridgeExtension!)) throw new Error("Model bridge adapter must be absolute");
+			const module: unknown = createRequire(import.meta.url)(options.modelBridgeExtension!);
+			if (!module || typeof module !== "object" || !("default" in module) || typeof module.default !== "function") throw new Error("Model bridge adapter is invalid");
+			const handlers: Array<(event: unknown, context: { modelRegistry: ModelRegistry }) => void | Promise<void>> = [];
+			await module.default(Object.freeze({
+				registerProvider: (name: string, config: ProviderConfigInput) => registry.registerProvider(name, config, "<trusted-model-bridge>"),
+				on: (event: string, handler: typeof handlers[number]) => {
+					if (event !== "session_start") throw new Error("Sandbox model bridge hooks denied");
+					handlers.push(handler);
+				},
+			}));
+			for (const handler of handlers) await handler(undefined, { modelRegistry: registry });
+		} : undefined,
 		cwd: options.cwd,
 		agentDir,
 		settings,
@@ -168,10 +192,10 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 		serviceOwnerId: process.env.OMP_DESKTOP_SERVICE_OWNER || undefined,
 		modelPattern: parsed.provider && parsed.model ? `${parsed.provider}/${parsed.model}` : parsed.model,
 		thinkingLevel: parsed.thinking,
-		systemPrompt: options.systemPrompt ?? parsed.systemPrompt,
+		systemPrompt: options.sandbox ? options.systemPrompt : options.systemPrompt ?? parsed.systemPrompt,
 		appendSystemPrompt: parsed.appendSystemPrompt,
 		additionalExtensionPaths: [...(options.extensions ?? []), ...(parsed.extensions ?? [])],
-		extensions: options.desktopPluginPrompts ? [pi=>{
+		extensions: !options.sandbox && options.desktopPluginPrompts ? [pi=>{
 			pi.on("before_agent_start",async event=>{
 				const contributions=await requestPluginPrompts();const additions:string[]=[];
 				for(const contribution of contributions){
@@ -201,8 +225,8 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 			`Node SDK extensions failed: ${result.extensionsResult.errors.map(error => `${error.path}: ${error.error}`).join("; ")}`,
 		);
 	}
-	const daemonPresence = await registerDaemonProjectPresence(options.cwd);
-	settings.startWatching();
+	const daemonPresence = options.sandbox ? undefined : await registerDaemonProjectPresence(options.cwd);
+	if (!options.sandbox) settings.startWatching();
 	try {
 		await result.session.sessionManager.ensureOnDisk();
 		return await runRpcMode(result.session, {
@@ -230,7 +254,7 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 		try {
 			await result.session.dispose();
 		} finally {
-			await daemonPresence.close();
+			await daemonPresence?.close();
 		}
 	}
 }

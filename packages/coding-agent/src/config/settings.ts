@@ -163,6 +163,8 @@ export interface SettingsOptions {
 	cwd?: string;
 	/** Agent directory for config.yml/config.yaml storage */
 	agentDir?: string;
+	/** Trusted embedded hosts may skip all project/config-overlay discovery. */
+	globalOnly?: boolean;
 	/** Don't persist to disk (for tests) */
 	inMemory?: boolean;
 	/** Read config sources without opening storage or writing migrations */
@@ -602,6 +604,7 @@ export class Settings {
 	#projectSourcePaths: string[] = [];
 	/** Capability warnings already surfaced for the current project scope; reloads stay quiet. */
 	#projectSettingsWarningsSeen = new Set<string>();
+	readonly #globalOnly: boolean;
 	/** Explicit config overlay that most recently supplied shellPath. */
 	#overlayShellPathSource: string | undefined;
 	/** Runtime overrides (not persisted) */
@@ -672,10 +675,11 @@ export class Settings {
 	#persist: boolean;
 
 	private constructor(options: SettingsOptions = {}) {
+		this.#globalOnly = options.globalOnly === true;
 		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
 		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
 		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
-		const configFiles = process.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? [];
+		const configFiles = this.#globalOnly ? [] : process.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? [];
 		if (options.configFiles) configFiles.push(...options.configFiles);
 		this.#configFiles = configFiles.map(file => path.resolve(this.#cwd, expandTilde(file)));
 		this.#persist = !options.inMemory && options.readOnly !== true;
@@ -1328,6 +1332,7 @@ export class Settings {
 			cloned = new Settings({
 				cwd,
 				agentDir: this.#agentDir,
+				globalOnly: this.#globalOnly,
 				inMemory: !this.#persist,
 			});
 			cloned.#storage = this.#storage;
@@ -2434,6 +2439,7 @@ export class Settings {
 		quarantineInvalid: boolean,
 		options: { rejectNewWarnings?: boolean; cwd?: string } = {},
 	): Promise<ProjectSettingsReadResult> {
+		if (this.#globalOnly) return { settings: {}, fileSettings: {}, shellPathSource: undefined, sourcePaths: [], warningsSeen: new Set() };
 		const cwd = options.cwd ?? this.#cwd;
 		// Resolve once: capability discovery, fs-cache invalidation, and the
 		// warning prefix below must all derive from the same absolute scope so

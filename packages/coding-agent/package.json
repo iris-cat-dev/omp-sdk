@@ -92,10 +92,15 @@
 		"./sdk/rpc": {
 			"bun": "./src/modes/rpc/rpc-mode.ts",
 			"node": {
-				"types": "./src/modes/rpc/rpc-mode.ts",
+				"types": "./src/node-rpc.ts",
 				"import": "./dist/node/rpc.mjs"
 			},
 			"default": "./src/modes/rpc/rpc-mode.ts"
+		},
+		"./sdk/sandbox": {
+			"bun": "./src/sandbox-fs.ts",
+			"node": { "types": "./src/sandbox-fs.ts", "import": "./dist/node/sandbox.mjs" },
+			"default": "./src/sandbox-fs.ts"
 		},
 		"./sdk/plugins": {
 			"bun": "./src/cli/plugin-cli.ts",

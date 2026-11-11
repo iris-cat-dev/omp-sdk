@@ -165,6 +165,8 @@ export interface SystemPromptRebuildResult {
 
 interface SessionToolsOptions {
 	toolRegistry?: Map<string, AgentTool>;
+	/** Creation-time default-deny capability grant; cannot be widened by refresh/mounting. */
+	allowedToolNames?: Readonly<Record<string, true>>;
 	createVibeTools?: () => AgentTool[];
 	/** Creates the private `think` scratchpad tool for runtime setting changes. */
 	createThinkTool?: () => Promise<AgentTool | null>;
@@ -363,6 +365,7 @@ interface XdevMountNoticeProjection {
 export class SessionTools {
 	readonly #host: SessionToolsHost;
 	#toolRegistry: Map<string, AgentTool>;
+	readonly #allowedToolNames: Readonly<Record<string, true>> | undefined;
 	#createVibeTools: (() => AgentTool[]) | undefined;
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
 	#installedVibeToolNames = new Set<string>();
@@ -498,6 +501,7 @@ export class SessionTools {
 	constructor(host: SessionToolsHost, options: SessionToolsOptions) {
 		this.#host = host;
 		this.#toolRegistry = options.toolRegistry ?? new Map();
+		this.#allowedToolNames = options.allowedToolNames ? Object.freeze({ ...options.allowedToolNames }) : undefined;
 		this.#createVibeTools = options.createVibeTools;
 		this.#createThinkTool = options.createThinkTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);
@@ -732,6 +736,7 @@ export class SessionTools {
 	 * shortcut could render or return the wrong tool.
 	 */
 	getToolByName(name: string): AgentTool | undefined {
+		if (this.#allowedToolNames && !Object.hasOwn(this.#allowedToolNames, name)) return undefined;
 		const bareName = stripXdUrlPrefix(name);
 		const direct = this.#toolRegistry.get(name) ?? this.#toolRegistry.get(bareName);
 		if (direct) return direct;
@@ -1291,6 +1296,8 @@ export class SessionTools {
 
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
+		const allowed = this.#allowedToolNames;
+		if (allowed && toolNames.some(name => !Object.hasOwn(allowed, name))) throw new Error("Sandbox tool grant denied");
 		toolNames = normalizeToolNames(toolNames);
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		const fullWriteSelected =
@@ -2562,6 +2569,7 @@ export class SessionTools {
 	}
 
 	async #applyMCPToolRefresh(mcpTools: CustomTool[]): Promise<void> {
+		if (this.#allowedToolNames && mcpTools.length > 0) throw new Error("Sandbox MCP tools denied");
 		const previousMcpTools = new Map<string, AgentTool>();
 		for (const [name, tool] of this.#toolRegistry) {
 			if (isMCPToolName(name)) previousMcpTools.set(name, tool);
@@ -2628,6 +2636,7 @@ export class SessionTools {
 
 	/** Replaces RPC host-owned tools and refreshes the active set before the next model call. */
 	refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {
+		if (this.#allowedToolNames && rpcTools.length > 0) return Promise.reject(new Error("Sandbox host tools denied"));
 		const snapshot = [...rpcTools];
 		return this.runToolRegistryMutation(() => this.#applyRpcHostToolRefresh(snapshot));
 	}

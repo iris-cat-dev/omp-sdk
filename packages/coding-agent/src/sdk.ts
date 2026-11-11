@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { openSandboxFs, sandboxTools, SANDBOX_TOOL_NAMES, buildSandboxSystemPrompt, type AgentSandbox } from "./sandbox";
 import { restoreOwnedServices } from "./launch/services";
 import {
 	Agent,
@@ -60,6 +61,7 @@ import {
 	formatAdvisorContextPrompt,
 	formatAdvisorMemoryPrompt,
 } from "./advisor";
+import type { DiscoveredAdvisors } from "./advisor/config";
 import { AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { createAutoresearchExtension } from "./autoresearch";
@@ -836,6 +838,10 @@ export interface CreateAgentSessionOptions {
 	 * and ambient custom tools remain disabled. Default: false.
 	 */
 	allowRestrictedCustomTools?: boolean;
+	/** Mandatory model-capability file namespace; ignores tool/prompt/extension grants. */
+	sandbox?: AgentSandbox;
+	/** Trusted host-only provider registration, without extension/tool APIs. */
+	setupModelRegistry?: (registry: ModelRegistry) => Promise<void>;
 
 	/** Output schema for structured completion (subagents). */
 	outputSchema?: unknown;
@@ -977,6 +983,10 @@ export interface CreateAgentSessionOptions {
 	autoApprove?: boolean;
 }
 
+interface InternalCreateAgentSessionOptions extends CreateAgentSessionOptions {
+	sandboxPolicy?: AgentSandbox;
+}
+
 /** Saved models were exhausted without permission to substitute another model. */
 export class SessionModelRestoreError extends Error {
 	constructor(modelSelector: string) {
@@ -1025,6 +1035,7 @@ export function resolveDialect(
 
 // Re-exports
 
+export * from "./sandbox-fs";
 export type { PromptTemplate } from "./config/prompt-templates";
 export { Settings } from "./config/settings";
 export type { SkillsSettings } from "./extensibility/settings";
@@ -1792,6 +1803,36 @@ export function createAutoLearnCaptureRunner(
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	if ("sandboxPolicy" in options) throw new Error("Sandbox policy is private to the SDK");
+	if (options.sandbox) {
+		const files = await openSandboxFs(options.sandbox);
+		try {
+			const sourceSettings = await (options.settings ?? options.settingsManager ?? Settings.loadIsolated({ cwd: options.sandbox.root, agentDir: options.agentDir ?? getAgentDir(), globalOnly: true }));
+			const result = await createAgentSessionWithPolicy({ ...options, sandbox: undefined,
+				sandboxPolicy: Object.freeze({ root: options.sandbox.root }),
+				cwd: options.sandbox.root, settings: sourceSettings.overlay({ "memory.backend": "off", "autolearn.enabled": false }), settingsManager: undefined, bindProcessState: false,
+				customTools: sandboxTools(files), toolNames: [...SANDBOX_TOOL_NAMES],
+				restrictToolNames: true, allowRestrictedCustomTools: true,
+				systemPrompt: buildSandboxSystemPrompt(typeof options.systemPrompt === "string" ? options.systemPrompt : Array.isArray(options.systemPrompt) ? options.systemPrompt.join("\n") : undefined), appendSystemPrompt: undefined,
+				systemPromptTemplate: undefined, customSystemPrompt: undefined,
+				skills: [], rules: [], contextFiles: [], noContextFiles: true,
+				promptTemplates: [], slashCommands: [], workspaceTree: { rootPath: ".", rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+				disableExtensionDiscovery: true, additionalExtensionPaths: [], extensions: [],
+				extensionRoots: () => ({ explicit: [], mode: "explicit-only", configured: [], configuredLevel: "user" }),
+				preloadedExtensions: undefined, preloadedPreparedExtensions: [], preloadedExtensionPaths: [],
+				deferredExtensionPaths: [],
+				enableMCP: false, mcpManager: undefined, mcpTools: [], enableLsp: false,
+				enableIrc: false, requireYieldTool: false, skipPythonPreflight: true,
+				prewalk: undefined, deferredPrewalk: undefined, suppressAutoPrewalk: true, planYolo: undefined, additionalDirectories: [], cacheWarming: false,
+			});
+			result.session.addDisposer(() => files.close());
+			return result;
+		} catch (error) { files.close(); throw error; }
+	}
+	return createAgentSessionWithPolicy(options);
+}
+
+async function createAgentSessionWithPolicy(options: InternalCreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
 	const proxyController =
 		options.proxyController ??
 		(options.proxyPolicy
@@ -1799,7 +1840,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			: (getScopedProxyPolicyController() ?? new ProxyPolicyController()));
 	return withProxyPolicy(proxyController, async () => {
 		registerLocalInferenceApi();
-		await loadRuntimeIdentity();
+		if (!options.sandboxPolicy) await loadRuntimeIdentity();
 		const extensionRoots = options.extensionRoots?.();
 		const explicit = extensionRoots?.explicit ?? options.additionalExtensionPaths ?? [];
 		const mode = extensionRoots?.mode ?? (options.disableExtensionDiscovery ? "explicit-only" : "merge");
@@ -1807,7 +1848,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	});
 }
 
-async function createAgentSessionScoped(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
+async function createAgentSessionScoped(options: InternalCreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
 	if (options.systemPromptTemplate !== undefined && options.customSystemPrompt !== undefined) {
 		throw new Error("systemPromptTemplate cannot be combined with a literal custom system prompt");
 	}
@@ -1860,6 +1901,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				cacheDbPath: getModelDbPath(agentDir),
 			},
 		);
+	await options.setupModelRegistry?.(modelRegistry);
 	let prewalk = options.prewalk;
 	let deferredPrewalk = options.deferredPrewalk;
 	// Track whether we internally created the authStorage so we can close it
@@ -1949,11 +1991,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return null;
 		}
 	};
-	const activeRepoContextPromise = logger.time("resolveActiveRepoContext", resolveRepoContext, cwd);
+	const activeRepoContextPromise = options.sandboxPolicy ? Promise.resolve(null) : logger.time("resolveActiveRepoContext", resolveRepoContext, cwd);
 	activeRepoContextPromise.catch(() => {});
-	const watchdogFilesPromise = logger.time("discoverWatchdogFiles", () => discoverWatchdogFiles(cwd, agentDir));
+	const watchdogFilesPromise = options.sandboxPolicy ? Promise.resolve([]) : logger.time("discoverWatchdogFiles", () => discoverWatchdogFiles(cwd, agentDir));
 	watchdogFilesPromise.catch(() => {});
-	const advisorConfigsPromise = logger.time("discoverAdvisorConfigs", () => discoverAdvisorConfigs(cwd, agentDir));
+	const advisorConfigsPromise: Promise<DiscoveredAdvisors> = options.sandboxPolicy ? Promise.resolve({ advisors: [], sharedInstructions: undefined, warnings: [] }) : logger.time("discoverAdvisorConfigs", () => discoverAdvisorConfigs(cwd, agentDir));
 	advisorConfigsPromise.catch(() => {});
 	const promptTemplatesPromise = options.promptTemplates
 		? Promise.resolve(options.promptTemplates)
@@ -1984,6 +2026,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		logger.time("sessionManager", () =>
 			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
 		);
+	const savedEntries = sessionManager.getEntries();
+	const savedSandboxIndex = savedEntries.findIndex(entry => entry.type === "custom" && entry.customType === "sandbox-policy");
+	const savedSandbox = savedEntries[savedSandboxIndex];
+	if (savedSandbox && !options.sandboxPolicy) throw new Error("Saved sandbox sessions require their sandbox configuration");
+	if (options.sandboxPolicy) {
+		if (savedSandbox) {
+			if (savedEntries.some((entry, index) => index < savedSandboxIndex && (entry.type === "message" || entry.type === "session_init"))) throw new Error("Cannot resume an unrestricted transcript in a sandbox");
+			if (savedSandbox.type !== "custom" || !savedSandbox.data || typeof savedSandbox.data !== "object" || !("root" in savedSandbox.data) || savedSandbox.data.root !== options.sandboxPolicy.root) throw new Error("Saved sandbox root does not match");
+		} else {
+			if (sessionManager.getEntries().some(entry => entry.type === "message" || entry.type === "session_init")) throw new Error("Cannot resume an unrestricted transcript in a sandbox");
+			sessionManager.appendCustomEntry("sandbox-policy", options.sandboxPolicy);
+		}
+	}
 	const configuredDirs = options.additionalDirectories
 		? options.additionalDirectories
 		: cfgWorkspaceAdditionalDirectories.get(settings);
@@ -3674,8 +3729,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Built-in tools get it in `createTools`; extension, SDK-custom, image-gen,
 		// TTS, and startup (non-deferred) MCP tools all funnel through here, so apply
 		// it once at this adapter boundary (idempotent — a no-op if already wrapped).
+		// Sandbox results are already bounded and must never spill to host artifacts.
 		const wrappedExtensionTools: Tool[] = deduplicateMCPToolsByName(
-			wrapRegisteredTools(allCustomTools, extensionRunner).map(wrapToolWithMetaNotice),
+			wrapRegisteredTools(allCustomTools, extensionRunner).map(tool => options.sandboxPolicy ? tool : wrapToolWithMetaNotice(tool)),
 		);
 		const initialMcpManagerToolNames = new Set<string>();
 		for (const tool of wrappedExtensionTools) {
@@ -4081,7 +4137,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// injection state is retained only for rule names that remain registered.
 			// Sessions handed an explicit rule set (subagents inherit the parent's) keep it
 			// but still re-bucket, so live `ttsr.*` filter changes apply to them too.
-			if (hasSession) {
+			if (hasSession && !options.sandboxPolicy) {
 				// These reads share only the cwd and discovery scope. Start them together:
 				// a slow repository lookup must not delay context files or rules, including
 				// the first refresh after session_start hooks have edited those files.
@@ -4554,7 +4610,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// One transform per conversation: the date/cwd reminder remembers what each
 		// conversation was sent, so the main loop and every advisor get their own.
 		const createTransformProviderContext = () => {
-			const dateCwdReminder = new DateCwdReminderInjector();
+			const dateCwdReminder = options.sandboxPolicy ? undefined : new DateCwdReminderInjector();
 			return async (context: Context, transformModel: Model): Promise<Context> => {
 				let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 				// The archive was sized for the model active at the last context build; a model switch may have lowered the budget.
@@ -4569,6 +4625,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				transformed = await blobBroker.decorateContext(transformed, transformModel);
 				// Byte budget after decoration: URL/file-referenced images carry no inline bytes.
 				transformed = clampProviderContextImageBytes(transformed, transformModel);
+				if (!dateCwdReminder) return transformed;
 				// Keep per-request volatility out of the system prompt: the date/cwd
 				// reminder rides on the first user turn so open-weight providers keep
 				// their tool-schema prefix cache (#7404).
@@ -4948,6 +5005,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// streamed and parsed on the main thread.
 		session = new AgentSession({
 			proxyController,
+			sandbox: options.sandboxPolicy,
 			cacheWarmer,
 			costGate: options.costGate,
 			advisorWatchdogPrompt,
@@ -5024,9 +5082,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					.filter((tool): tool is AgentTool => tool !== null)
 					.map(tool => new ExtensionToolWrapper(wrapToolWithMetaNotice(tool), extensionRunner, advisorAgent));
 			},
-			createThinkTool: async () => (await HIDDEN_TOOLS.think(toolSession)) ?? null,
+			createThinkTool: options.sandboxPolicy ? undefined : async () => (await HIDDEN_TOOLS.think(toolSession)) ?? null,
 			createVibeTools:
-				(options.taskDepth ?? 0) === 0 && !options.parentTaskPrefix
+				!options.sandboxPolicy && (options.taskDepth ?? 0) === 0 && !options.parentTaskPrefix
 					? () => createVibeTools(toolSession)
 					: undefined,
 			builtInToolNames: builtInRegistryToolNames,
@@ -5044,7 +5102,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			xdev: toolSession.xdev,
 			presentationPinnedToolNames,
 			setActiveToolNames: setSessionActiveToolNames,
-			ensureWriteRegistered,
+			ensureWriteRegistered: options.sandboxPolicy ? undefined : ensureWriteRegistered,
 			isDeviceOnlyWrite: () => toolSession.deviceOnlyWrite === true,
 			setDeviceOnlyWrite: enabled => {
 				toolSession.deviceOnlyWrite = enabled ? true : undefined;
@@ -5052,7 +5110,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setPendingFullWriteDescription: enabled => {
 				toolSession.pendingFullWriteDescription = enabled ? true : undefined;
 			},
-			ensureGoalRegistered,
+			ensureGoalRegistered: options.sandboxPolicy ? undefined : ensureGoalRegistered,
 			reconcileSettingsGatedTools,
 			getMcpServerInstructions: () => {
 				const raw = readMcpServerInstructions();
@@ -5796,7 +5854,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		}
 		startDeferredMCPDiscovery?.(session);
-		if (options.serviceOwnerId) await restoreOwnedServices(toolSession);
+		if (!options.sandboxPolicy && options.serviceOwnerId) await restoreOwnedServices(toolSession);
 
 		startupCleanup.move();
 		return {

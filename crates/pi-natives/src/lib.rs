@@ -81,6 +81,7 @@ pub mod prof;
 pub mod ps;
 pub mod pty;
 pub mod shell;
+pub mod sandbox_fs;
 pub mod summary;
 pub mod task;
 #[cfg(test)]
