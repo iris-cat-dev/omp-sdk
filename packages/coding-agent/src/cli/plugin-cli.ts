@@ -19,7 +19,7 @@ import {
 	MarketplaceManager,
 	parsePluginId,
 } from "../extensibility/plugins/marketplace/index.js";
-import type { InstalledPlugin } from "../extensibility/plugins/types";
+import type { InstalledPlugin, PluginManagementPatch } from "../extensibility/plugins/types";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 
 // =============================================================================
@@ -34,6 +34,7 @@ export type PluginAction =
 	| "doctor"
 	| "check"
 	| "features"
+	| "manage"
 	| "config"
 	| "enable"
 	| "disable"
@@ -69,6 +70,7 @@ const VALID_ACTIONS: PluginAction[] = [
 	"doctor",
 	"check",
 	"features",
+	"manage",
 	"config",
 	"enable",
 	"disable",
@@ -192,6 +194,14 @@ export async function runPluginCommand(cmd: PluginCommandArgs): Promise<void> {
 					);
 					for (const error of check.errors) console.error(error);
 				}
+			break;
+		}
+		case "manage": {
+			if (!cmd.args[0]) throw new Error("Native plugin name is required");
+			const patch = cmd.flags.set === undefined ? undefined : parsePluginManagementPatch(cmd.flags.set);
+			if (patch) refuseDryRun(cmd.flags, "manage");
+			const management = await manager.managePlugin(cmd.args[0], cmd.flags.scope, patch);
+			console.log(JSON.stringify(management));
 			break;
 		}
 		case "features":
@@ -733,7 +743,8 @@ async function handleList(manager: PluginManager, flags: { json?: boolean }): Pr
 	const mktPlugins = await mktMgr.listInstalledPlugins();
 
 	if (flags.json) {
-		console.log(JSON.stringify({ npm: npmPlugins, marketplace: mktPlugins }, null, 2));
+		console.log(JSON.stringify({ npm: npmPlugins, marketplace: mktPlugins, paths: { marketplacesRegistry: getMarketplacesRegistryPath(), pluginsRoot: path.dirname(getInstalledPluginsRegistryPath()) } }, null, 2));
+		// Paths are resolved by the selected profile, including XDG/project discovery.
 		return;
 	}
 
@@ -1205,6 +1216,7 @@ ${chalk.bold("Commands:")}
   doctor                         Check plugin health
   features <pkg>                 View/modify enabled features
   config <cmd> <pkg> [key] [val] Manage plugin settings
+  manage <id>                    Read safe settings/features; --set accepts a schema-validated JSON patch
   enable <pkg>                   Enable a disabled plugin
   disable <pkg>                  Disable plugin without uninstalling
   marketplace <cmd>            Manage marketplace sources (add, remove, update, list)
@@ -1247,4 +1259,15 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} plugin install --scope project name@marketplace
   ${APP_NAME} plugin install github:user/repo#v1.0
 `);
+}
+
+function parsePluginManagementPatch(text: string): PluginManagementPatch {
+	const value: unknown = JSON.parse(text);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native management patch");
+	const patch = value as Record<string, unknown>;
+	if (Object.keys(patch).some(key => !["settings", "deleteSettings", "enabledFeatures"].includes(key))) throw new Error("Invalid native management patch");
+	if (patch.enabledFeatures !== undefined && patch.enabledFeatures !== null && (!Array.isArray(patch.enabledFeatures) || patch.enabledFeatures.some(item => typeof item !== "string"))) throw new Error("Invalid native features");
+	if (patch.deleteSettings !== undefined && (!Array.isArray(patch.deleteSettings) || patch.deleteSettings.some(item => typeof item !== "string"))) throw new Error("Invalid native setting keys");
+	if (patch.settings !== undefined && (!patch.settings || typeof patch.settings !== "object" || Array.isArray(patch.settings) || Object.values(patch.settings).some(item => !["string", "number", "boolean"].includes(typeof item)))) throw new Error("Invalid native settings");
+	return patch as PluginManagementPatch;
 }

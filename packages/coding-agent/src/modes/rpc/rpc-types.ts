@@ -106,6 +106,7 @@ export type RpcCommand =
 	/** Execute only a registered extension command; never interpret it as model input. */
 	| { id?: string; type: "execute_extension_command"; name: string; args?: string }
 	| { id?: string; type: "get_entries"; since?: string }
+	| { id?: string; type: "append_session_annotation"; customType: string; data: unknown }
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
 	| { id?: string; type: "set_host_tools"; tools: RpcHostToolDefinition[] }
@@ -528,6 +529,7 @@ export type RpcResponse =
 			success: true;
 			data: { entries: SessionEntry[]; leafId: string | null };
 	  }
+	| { id?: string; type: "response"; command: "append_session_annotation"; success: true; data: { entryId: string } }
 	| {
 			id?: string;
 			type: "response";

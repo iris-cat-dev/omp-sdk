@@ -20,6 +20,7 @@ import { registerDaemonProjectPresence } from "./launch/presence";
 import { BUILTIN_TOOL_NAMES } from "./tools/builtin-names";
 import { cfgToolsApprovalMode } from "./tools/settings";
 import { ProxyPolicyController, type ProxyPolicy, setDefaultProxyPolicyController } from "@oh-my-pi/pi-ai/utils/proxy";
+import { randomUUID } from "node:crypto";
 
 export * from "./modes/rpc/rpc-mode";
 
@@ -39,6 +40,7 @@ export interface NodeRpcHostOptions {
 	extensions?: string[];
 	disallowedTools?: string[];
 	configFiles?: string[];
+	desktopPluginPrompts?: boolean;
 }
 
 const supportedParsedOptions: Readonly<Record<string, true>> = {
@@ -151,6 +153,12 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 		// A denylist must not turn unrelated denials into an image whitelist denial.
 		toolNames = (toolNames ?? [...BUILTIN_TOOL_NAMES, "generate_image"]).filter(name => !denied.has(name));
 	}
+	const pluginPrompts=new Map<string,{resolve(value:DesktopPluginPromptContribution[]):void;reject(error:Error):void;timer:ReturnType<typeof setTimeout>}>();
+	const requestPluginPrompts=()=>{
+		const id=randomUUID();const {promise,resolve,reject}=Promise.withResolvers<DesktopPluginPromptContribution[]>();
+		const timer=setTimeout(()=>{pluginPrompts.delete(id);reject(new Error("Desktop plugin prompt hook timed out"));},30_000);
+		pluginPrompts.set(id,{resolve,reject,timer});process.stdout.write(JSON.stringify({type:"desktop_plugin_prompt_request",id})+"\n");return promise;
+	};
 	const result = await createAgentSession({
 		proxyController,
 		cwd: options.cwd,
@@ -163,6 +171,21 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 		systemPrompt: options.systemPrompt ?? parsed.systemPrompt,
 		appendSystemPrompt: parsed.appendSystemPrompt,
 		additionalExtensionPaths: [...(options.extensions ?? []), ...(parsed.extensions ?? [])],
+		extensions: options.desktopPluginPrompts ? [pi=>{
+			pi.on("before_agent_start",async event=>{
+				const contributions=await requestPluginPrompts();const additions:string[]=[];
+				for(const contribution of contributions){
+					if(contribution.text)additions.push(contribution.text);
+					for(const name of contribution.skills??[]){
+						const skill=result.session.skills.find(skill=>skill.name===name);
+						if(!skill)throw new Error(`Selected plugin skill is unavailable: ${name}`);
+						additions.push(`<skill name=${JSON.stringify(name)} path=${JSON.stringify(skill.filePath)}>\n${await fs.readFile(skill.filePath,"utf8")}\n</skill>`);
+					}
+					for(const name of contribution.tools??[]){const tool=pi.getAllTools().find(tool=>tool.name===name);if(!tool)throw new Error(`Selected plugin tool is unavailable: ${name}`);additions.push(`Selected tool ${tool.name}: ${tool.description}`);}
+				}
+				return {systemPrompt:[...event.systemPrompt,...additions]};
+			});
+		}] : undefined,
 		disableExtensionDiscovery: parsed.noExtensions,
 		toolNames,
 		enableLsp: parsed.noLsp ? false : undefined,
@@ -181,16 +204,34 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 	const daemonPresence = await registerDaemonProjectPresence(options.cwd);
 	settings.startWatching();
 	try {
+		await result.session.sessionManager.ensureOnDisk();
 		return await runRpcMode(result.session, {
 			input,
 			setToolUIContext: options.protocolMode === "rpc-ui" ? result.setToolUIContext : undefined,
 			headless: parsed.noUi,
 			mcpManager: result.mcpManager,
 			subagentEventBus: result.subagentEventBus,
+			onCustomFrame(frame){
+				if(!frame||typeof frame!=="object"||!("type" in frame)||frame.type!=="desktop_plugin_prompt_response")return false;
+				if(!("id" in frame)||typeof frame.id!=="string")throw new Error("Malformed Desktop prompt response");
+				const pending=pluginPrompts.get(frame.id);if(!pending)return true;pluginPrompts.delete(frame.id);clearTimeout(pending.timer);
+				if("error" in frame&&typeof frame.error==="string"){pending.reject(new Error(frame.error));return true;}
+				if(!("contributions" in frame)||!Array.isArray(frame.contributions)){pending.reject(new Error("Malformed Desktop prompt contributions"));return true;}
+				const contributions:DesktopPluginPromptContribution[]=[];
+				for(const raw of frame.contributions){
+					if(!raw||typeof raw!=="object"||(raw.text!==undefined&&typeof raw.text!=="string")||(raw.skills!==undefined&&(!Array.isArray(raw.skills)||raw.skills.some((name:unknown)=>typeof name!=="string")))||(raw.tools!==undefined&&(!Array.isArray(raw.tools)||raw.tools.some((name:unknown)=>typeof name!=="string")))){pending.reject(new Error("Malformed Desktop prompt contribution"));return true;}
+					contributions.push(raw);
+				}
+				pending.resolve(contributions);return true;
+			},
 		});
 	} finally {
 		settings.stopWatching();
-		await daemonPresence.close();
+		try {
+			await result.session.dispose();
+		} finally {
+			await daemonPresence.close();
+		}
 	}
 }
 
@@ -206,3 +247,5 @@ export async function stopNodeRpcDaemon(input: { cwd: string; name: string; id?:
 		await closeDaemonClients();
 	}
 }
+
+interface DesktopPluginPromptContribution {text?:string;skills?:string[];tools?:string[]}

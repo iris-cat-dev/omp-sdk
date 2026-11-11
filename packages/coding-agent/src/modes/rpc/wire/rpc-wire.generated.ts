@@ -381,6 +381,24 @@ export type CacheWarmingMode = "off" | "streaming" | "idle";
 
 export type ApprovalMode = "always-ask" | "always-ask-cached" | "write" | "yolo";
 
+export interface ProxyDirectRoute {
+	mode: "direct";
+}
+
+export interface ProxyServerRoute {
+	mode: "proxy";
+	url: string;
+}
+
+export type ProxyRoute = ProxyDirectRoute | ProxyServerRoute;
+
+export interface ProxyPolicy {
+	enabled: boolean;
+	default?: ProxyRoute;
+	providers?: Record<string, ProxyRoute>;
+	noProxy?: string[];
+}
+
 /** `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches. */
 export type MessageUpdates = "full" | "delta";
 
@@ -1707,6 +1725,15 @@ export interface GetEntriesParams {
 	since?: string;
 }
 
+export interface AppendSessionAnnotationParams {
+	customType: string;
+	data: unknown;
+}
+
+export interface AppendSessionAnnotationResult {
+	entryId: string;
+}
+
 export interface SetTodosParams {
 	phases: TodoPhase[];
 }
@@ -1811,6 +1838,14 @@ export interface DictationStopResult {
 export interface SetModelParams {
 	provider: string;
 	modelId: string;
+}
+
+export interface SetProxyPolicyParams {
+	policy: ProxyPolicy;
+}
+
+export interface SetProxyPolicyResult {
+	policy: ProxyPolicy;
 }
 
 export interface GetAvailableModelsResult {
@@ -2016,6 +2051,7 @@ export interface RpcWireCommands {
 	get_available_commands: { params: undefined; result: GetAvailableCommandsResult };
 	execute_extension_command: { params: ExecuteExtensionCommandParams; result: ExecuteExtensionCommandResult };
 	get_entries: { params: GetEntriesParams; result: SessionEntries };
+	append_session_annotation: { params: AppendSessionAnnotationParams; result: AppendSessionAnnotationResult };
 	get_tree: { params: undefined; result: SessionTree };
 	set_todos: { params: SetTodosParams; result: SetTodosResult };
 	set_host_tools: { params: SetHostToolsParams; result: SetHostToolsResult };
@@ -2033,6 +2069,7 @@ export interface RpcWireCommands {
 	dictation_start: { params: DictationStartParams; result: undefined };
 	dictation_stop: { params: undefined; result: DictationStopResult };
 	set_model: { params: SetModelParams; result: ModelInfo };
+	set_proxy_policy: { params: SetProxyPolicyParams; result: SetProxyPolicyResult };
 	cycle_model: { params: undefined; result: ModelCycleResult | null };
 	get_available_models: { params: undefined; result: GetAvailableModelsResult };
 	set_thinking_level: { params: SetThinkingLevelParams; result: undefined };

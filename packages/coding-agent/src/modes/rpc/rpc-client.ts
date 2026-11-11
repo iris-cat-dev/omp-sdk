@@ -1068,6 +1068,12 @@ export class RpcClient {
 		return this.#getData<{ entries: SessionEntry[]; leafId: string | null }>(response);
 	}
 
+	/** Append a display-only custom entry; durable sessions acknowledge after their journal is flushed. */
+	async appendSessionAnnotation(input: { customType: string; data: unknown }): Promise<{ entryId: string }> {
+		const response = await this.#send({ type: "append_session_annotation", ...input });
+		return this.#getData<{ entryId: string }>(response);
+	}
+
 	/**
 	 * Pi-compatible raw session tree plus the current leaf id.
 	 */

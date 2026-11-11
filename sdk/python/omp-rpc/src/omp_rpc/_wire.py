@@ -555,6 +555,25 @@ class ModelInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class ProxyDirectRoute:
+    mode: Literal["direct"] = "direct"
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ProxyServerRoute:
+    mode: Literal["proxy"] = "proxy"
+    url: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ProxyPolicy:
+    enabled: bool
+    default: ProxyRoute | None = None
+    providers: dict[str, ProxyRoute] | None = None
+    no_proxy: tuple[str, ...] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class RuntimeResource:
     id: str
     kind: Literal["python_kernel", "javascript_kernel", "shell", "helper"]
@@ -1735,6 +1754,11 @@ class NegotiateProtocolResult:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class AppendSessionAnnotationResult:
+    entry_id: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class LiveConnectResult:
     voice: str
     sdp_answer: str
@@ -1757,6 +1781,9 @@ AgentMessage: TypeAlias = UserMessage | DeveloperMessage | AssistantMessage | To
 
 AssistantMessageEvent: TypeAlias = AssistantStartEvent | AssistantTextStartEvent | AssistantTextDeltaEvent | AssistantTextEndEvent | AssistantThinkingStartEvent | AssistantThinkingDeltaEvent | AssistantThinkingEndEvent | AssistantImageEndEvent | AssistantToolCallStartEvent | AssistantToolCallDeltaEvent | AssistantToolCallEndEvent | AssistantDoneEvent | AssistantErrorEvent
 """Streaming update for one assistant message, discriminated by `type`."""
+
+
+ProxyRoute: TypeAlias = ProxyDirectRoute | ProxyServerRoute
 
 
 UsageLimitState: TypeAlias = UsageLimitLowPriority | UsageLimitWrapUp
@@ -1977,6 +2004,31 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
         priority=optional(payload, "priority", decode_int, path),
         thinking=optional(payload, "thinking", parse_thinking_config, path),
         compat=optional(payload, "compat", decode_json_object, path),
+    )
+
+
+def parse_proxy_direct_route(value: object, path: str = "ProxyDirectRoute") -> ProxyDirectRoute:
+    payload = expect_object(value, path)
+    required(payload, "mode", cast('Decoder[Literal["direct"]]', literal(frozenset({"direct"}))), path)
+    return ProxyDirectRoute(
+    )
+
+
+def parse_proxy_server_route(value: object, path: str = "ProxyServerRoute") -> ProxyServerRoute:
+    payload = expect_object(value, path)
+    required(payload, "mode", cast('Decoder[Literal["proxy"]]', literal(frozenset({"proxy"}))), path)
+    return ProxyServerRoute(
+        url=required(payload, "url", decode_str, path),
+    )
+
+
+def parse_proxy_policy(value: object, path: str = "ProxyPolicy") -> ProxyPolicy:
+    payload = expect_object(value, path)
+    return ProxyPolicy(
+        enabled=required(payload, "enabled", decode_bool, path),
+        default=optional(payload, "default", parse_proxy_route, path),
+        providers=optional(payload, "providers", record(parse_proxy_route), path),
+        no_proxy=optional(payload, "noProxy", array(decode_str), path),
     )
 
 
@@ -3309,6 +3361,13 @@ def parse_negotiate_protocol_result(value: object, path: str = "NegotiateProtoco
     )
 
 
+def parse_append_session_annotation_result(value: object, path: str = "AppendSessionAnnotationResult") -> AppendSessionAnnotationResult:
+    payload = expect_object(value, path)
+    return AppendSessionAnnotationResult(
+        entry_id=required(payload, "entryId", decode_str, path),
+    )
+
+
 def parse_live_connect_result(value: object, path: str = "LiveConnectResult") -> LiveConnectResult:
     payload = expect_object(value, path)
     return LiveConnectResult(
@@ -3322,6 +3381,10 @@ def parse_logout_result(value: object, path: str = "LogoutResult") -> LogoutResu
     return LogoutResult(
         remaining_source=optional(payload, "remainingSource", decode_str, path),
     )
+
+
+def parse_proxy_route(value: object, path: str = "ProxyRoute") -> ProxyRoute:
+    return dispatch("mode", _PROXY_ROUTE_CASES)(value, path)
 
 
 def parse_usage_limit_state(value: object, path: str = "UsageLimitState") -> UsageLimitState:
@@ -3339,6 +3402,12 @@ def parse_notification(value: object, path: str = "notification") -> RpcNotifica
     if not isinstance(tag, str) or tag not in _RPC_NOTIFICATION_CASES:
         return UnknownNotification(decode_json_object(payload, path))
     return _RPC_NOTIFICATION_CASES[tag](payload, tag)
+
+
+_PROXY_ROUTE_CASES: Final[dict[str, Decoder[ProxyRoute]]] = {
+        "direct": parse_proxy_direct_route,
+        "proxy": parse_proxy_server_route,
+}
 
 
 _USAGE_LIMIT_STATE_CASES: Final[dict[str, Decoder[UsageLimitState]]] = {
@@ -3588,6 +3657,13 @@ class WireClient:
         if since is not None:
             params["since"] = since
         return parse_session_entries(self._command("get_entries", params), "get_entries")
+
+    def append_session_annotation(self, custom_type: str, data: JsonValue) -> AppendSessionAnnotationResult:
+        """Append a display-only custom session entry without model input. Durable sessions acknowledge after their journal is flushed; noSession keeps its in-memory semantics."""
+        params: dict[str, object] = {}
+        params["customType"] = custom_type
+        params["data"] = data
+        return parse_append_session_annotation_result(self._command("append_session_annotation", params), "append_session_annotation")
 
     def get_tree(self) -> SessionTree:
         """Read the raw session tree."""
@@ -4154,6 +4230,7 @@ __all__ = [
     "AgentSource",
     "AgentStartEvent",
     "AnthropicServerToolContent",
+    "AppendSessionAnnotationResult",
     "ApprovalMode",
     "AskAnswer",
     "AskOption",
@@ -4278,6 +4355,10 @@ __all__ = [
     "PromptError",
     "PromptResultEvent",
     "PromptStatus",
+    "ProxyDirectRoute",
+    "ProxyPolicy",
+    "ProxyRoute",
+    "ProxyServerRoute",
     "PythonExecutionMessage",
     "QueueMode",
     "QueueUpdateEvent",
@@ -4361,6 +4442,7 @@ __all__ = [
     "parse_agent_message",
     "parse_agent_start_event",
     "parse_anthropic_server_tool_content",
+    "parse_append_session_annotation_result",
     "parse_ask_answer",
     "parse_ask_option",
     "parse_ask_question",
@@ -4466,6 +4548,10 @@ __all__ = [
     "parse_prompt_context_thinking_group",
     "parse_prompt_error",
     "parse_prompt_result_event",
+    "parse_proxy_direct_route",
+    "parse_proxy_policy",
+    "parse_proxy_route",
+    "parse_proxy_server_route",
     "parse_python_execution_message",
     "parse_queue_update_event",
     "parse_queued_messages_state",

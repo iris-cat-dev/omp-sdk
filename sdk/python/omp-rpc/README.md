@@ -21,8 +21,8 @@ provides:
 
 ## Generated from the wire schema
 
-Protocol types, their decoders, every command method, and every `on_<frame type>`
-listener live in `omp_rpc/_wire.py`, generated from the RPC wire schema in
+Protocol types, decoders, schema-representable command methods, and every
+`on_<frame type>` listener live in `omp_rpc/_wire.py`, generated from
 `packages/coding-agent/src/modes/rpc/wire` (also emitted as the language-neutral
 `rpc-wire.schema.json`). After changing the schema, regenerate from the repo root:
 
@@ -30,8 +30,8 @@ listener live in `omp_rpc/_wire.py`, generated from the RPC wire schema in
 bun run gen:rpc
 ```
 
-`packages/coding-agent/test/rpc-wire` fails when the committed outputs are stale or
-when the schema drifts from the server's own types. Decoding follows the schema:
+`packages/coding-agent/test/rpc-wire/conformance.types.ts` checks the schema
+against the server's own types. Decoding follows the schema:
 
 - records are frozen, keyword-only dataclasses with snake_case fields; required
   fields are validated, unknown keys are dropped, and fields older servers omit
@@ -43,7 +43,7 @@ when the schema drifts from the server's own types. Decoding follows the schema:
 
 Hand-written code covers what the schema cannot express: process lifecycle,
 prompt correlation (`prompt`, `prompt_and_wait`, `wait_for_settled`), message
-paging, todo seeding, extension UI replies, and host tool/URI dispatch.
+paging, todo seeding, typed proxy-policy serialization, extension UI replies, and host tool/URI dispatch.
 
 ## Basic Usage
 
@@ -216,6 +216,25 @@ previous session stays active. The event filter applies only to
 session events; responses, `prompt_result`, and UI/host frames always arrive,
 so `prompt_and_wait()` still completes when `agent_end` is filtered out.
 
+## Session-Owned Proxy Routing
+
+Set routing on an existing client before its next provider request:
+
+```python
+from omp_rpc import ProxyPolicy, ProxyDirectRoute, ProxyServerRoute
+
+policy = client.set_proxy_policy(ProxyPolicy(
+    enabled=True,
+    default=ProxyDirectRoute(),
+    providers={"openai": ProxyServerRoute(url="http://127.0.0.1:19899")},
+    no_proxy=("localhost",),
+))
+```
+
+The returned policy contains normalized proxy URLs. It belongs to this session;
+global proxy configuration is unchanged. `enabled=False` retains the routes
+without applying them.
+
 ## Removing Queued Messages
 
 `remove_queued_message(message, queue)` removes one matching prompt from the
@@ -273,6 +292,10 @@ off) raise `RpcCommandError`.
   strictly after that entry id; an unknown id raises `RpcCommandError` with
   `code == "unknown_since"`.
 - `get_tree()` returns the raw session tree as `SessionTree`.
+- `append_session_annotation(custom_type, data)` appends a native custom journal
+  entry and returns its `entry_id` after durable flushing. It appears in
+  `get_entries()` and `get_tree()`, stays outside `get_messages()`, and remains
+  in memory with `no_session=True`.
 - `get_available_commands()` returns typed `AvailableSlashCommand`s;
   `on_available_commands_update()` receives the same catalog at startup and
   whenever it changes.

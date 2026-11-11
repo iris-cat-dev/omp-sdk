@@ -263,6 +263,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "append_session_annotation",
+				"doc": "Append a display-only custom session entry without model input. Durable sessions acknowledge after their journal is flushed; noSession keeps its in-memory semantics.",
+				"params": "AppendSessionAnnotationParams",
+				"result": "AppendSessionAnnotationResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "get_tree",
 				"doc": "Read the raw session tree.",
 				"params": null,
@@ -447,6 +458,17 @@
 				"result": "ModelInfo",
 				"nullable": false,
 				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "set_proxy_policy",
+				"doc": "Set the session-owned proxy policy inherited by nested sessions.",
+				"params": "SetProxyPolicyParams",
+				"result": "SetProxyPolicyResult",
+				"nullable": false,
+				"unwrap": "policy",
 				"timeoutMs": null,
 				"completion": null,
 				"clientOmit": []
@@ -2316,6 +2338,69 @@
 				"yolo"
 			],
 			"type": "string"
+		},
+		"ProxyDirectRoute": {
+			"type": "object",
+			"properties": {
+				"mode": {
+					"const": "direct"
+				}
+			},
+			"required": [
+				"mode"
+			]
+		},
+		"ProxyServerRoute": {
+			"type": "object",
+			"properties": {
+				"mode": {
+					"const": "proxy"
+				},
+				"url": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"mode",
+				"url"
+			]
+		},
+		"ProxyRoute": {
+			"anyOf": [
+				{
+					"$ref": "#/$defs/ProxyDirectRoute"
+				},
+				{
+					"$ref": "#/$defs/ProxyServerRoute"
+				}
+			]
+		},
+		"ProxyPolicy": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				},
+				"default": {
+					"$ref": "#/$defs/ProxyRoute"
+				},
+				"providers": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": {
+						"$ref": "#/$defs/ProxyRoute"
+					}
+				},
+				"noProxy": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"enabled"
+			]
 		},
 		"MessageUpdates": {
 			"enum": [
@@ -6713,6 +6798,30 @@
 				}
 			}
 		},
+		"AppendSessionAnnotationParams": {
+			"type": "object",
+			"properties": {
+				"customType": {
+					"type": "string"
+				},
+				"data": {}
+			},
+			"required": [
+				"customType",
+				"data"
+			]
+		},
+		"AppendSessionAnnotationResult": {
+			"type": "object",
+			"properties": {
+				"entryId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"entryId"
+			]
+		},
 		"SetTodosParams": {
 			"type": "object",
 			"properties": {
@@ -7040,6 +7149,28 @@
 			"required": [
 				"provider",
 				"modelId"
+			]
+		},
+		"SetProxyPolicyParams": {
+			"type": "object",
+			"properties": {
+				"policy": {
+					"$ref": "#/$defs/ProxyPolicy"
+				}
+			},
+			"required": [
+				"policy"
+			]
+		},
+		"SetProxyPolicyResult": {
+			"type": "object",
+			"properties": {
+				"policy": {
+					"$ref": "#/$defs/ProxyPolicy"
+				}
+			},
+			"required": [
+				"policy"
 			]
 		},
 		"GetAvailableModelsResult": {

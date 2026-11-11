@@ -11,6 +11,81 @@ const packageDir = path.resolve(import.meta.dir, "..");
 for (const artifact of ["node", "node-desktop"]) {
 	const entry = path.join(packageDir, "dist", artifact, "rpc.mjs");
 	describe.skipIf(!fs.existsSync(entry))(`${artifact} RPC tool policy`, () => {
+		test.each([false, true])("idle RPC session durability with noSession=%s", async noSession => {
+			using root = TempDir.createSync("@node-rpc-idle-durability-");
+			const options = {
+				cwd: root.path(), agentDir: root.join("agent"), noSession,
+				extraArgs: ["--no-extensions", "--no-lsp", "--no-context-files", "--no-skills", "--no-rules", "--tools", "read"],
+			};
+			const env = {
+				HOME: root.path(), PI_CODING_AGENT_DIR: root.join("agent"), PI_CONFIG_DIR: ".omp", PI_PROFILE: "",
+				XDG_DATA_HOME: root.join("data"), XDG_STATE_HOME: root.join("state"), XDG_CACHE_HOME: root.join("cache"),
+				OPENAI_API_KEY: "test-no-network",
+			};
+			using client = new RpcClient({
+				command: () => ["node", "--input-type=module", "-e", `import {startNodeRpcHost} from ${JSON.stringify(pathToFileURL(entry).href)};globalThis.fetch=async()=>{throw Error("Idle startup must not call a model");};await startNodeRpcHost(${JSON.stringify(options)});`],
+				cwd: root.path(), env,
+			});
+			await client.start();
+			const state = await client.getState();
+			expect(await client.getMessages()).toEqual([]);
+			await client.stop();
+			if (noSession) {
+				expect(state.sessionFile).toBeUndefined();
+				return;
+			}
+			if (!state.sessionFile) throw new Error("Durable RPC must publish its session file");
+			using resumed = new RpcClient({
+				command: () => ["node", "--input-type=module", "-e", `import {startNodeRpcHost} from ${JSON.stringify(pathToFileURL(entry).href)};globalThis.fetch=async()=>{throw Error("Idle resume must not call a model");};await startNodeRpcHost(${JSON.stringify({...options, session: state.sessionFile})});`],
+				cwd: root.path(), env,
+			});
+			await resumed.start();
+			expect((await resumed.getState()).sessionId).toBe(state.sessionId);
+			expect(await resumed.getMessages()).toEqual([]);
+			await resumed.stop();
+		}, 30_000);
+
+		test.each([false, true])("session annotations remain outside model messages with noSession=%s", async noSession => {
+			using root = TempDir.createSync("@node-rpc-annotation-");
+			const options = {
+				cwd: root.path(), agentDir: root.join("agent"), noSession,
+				extraArgs: ["--no-extensions", "--no-lsp", "--no-context-files", "--no-skills", "--no-rules", "--tools", "read"],
+			};
+			const env = {
+				HOME: root.path(), PI_CODING_AGENT_DIR: root.join("agent"), PI_CONFIG_DIR: ".omp", PI_PROFILE: "",
+				XDG_DATA_HOME: root.join("data"), XDG_STATE_HOME: root.join("state"), XDG_CACHE_HOME: root.join("cache"),
+				OPENAI_API_KEY: "test-no-network",
+			};
+			const launch = (session?: string) => new RpcClient({
+				command: () => ["node", "--input-type=module", "-e", `import {startNodeRpcHost} from ${JSON.stringify(pathToFileURL(entry).href)};globalThis.fetch=async()=>{throw Error("Session annotations must not call a model");};await startNodeRpcHost(${JSON.stringify({ ...options, session })});`],
+				cwd: root.path(), env,
+			});
+			using client = launch();
+			await client.start();
+			const before = await client.getEntries();
+			await expect(client.appendSessionAnnotation({ customType: "", data: null })).rejects.toThrow("requires customType");
+			expect(await client.getEntries()).toEqual(before);
+			const data = { clientMessageId: "local-only", text: "/save-local", attachments: [{ type: "text", text: "first line\nsecond line\nthird line" }] };
+			const { entryId } = await client.appendSessionAnnotation({ customType: "desktop-local-submission", data });
+			const assertAnnotation = async (reader: RpcClient) => {
+				const { entries } = await reader.getEntries();
+				expect(entries.find(item => item.id === entryId)).toMatchObject({ type: "custom", customType: "desktop-local-submission", data });
+				expect(await reader.getMessages()).toEqual([]);
+			};
+			await assertAnnotation(client);
+			const state = await client.getState();
+			await client.stop();
+			if (noSession) {
+				expect(state.sessionFile).toBeUndefined();
+				return;
+			}
+			if (!state.sessionFile) throw new Error("Durable annotation must publish its session file");
+			using resumed = launch(state.sessionFile);
+			await resumed.start();
+			await assertAnnotation(resumed);
+			await resumed.stop();
+		}, 30_000);
+
 		test("prompt-context reads the native snapshot without starting generation or exposing model configuration", async () => {
 			using root = TempDir.createSync("@node-rpc-prompt-context-");
 			const options = {

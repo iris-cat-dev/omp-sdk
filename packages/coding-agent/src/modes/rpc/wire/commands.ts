@@ -168,6 +168,12 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		params: { "since?": "string" },
 		result: "SessionEntries",
 	},
+	{
+		name: "append_session_annotation",
+		doc: "Append a display-only custom session entry without model input. Durable sessions acknowledge after their journal is flushed; noSession keeps its in-memory semantics.",
+		params: { customType: "string", data: "unknown" },
+		result: { entryId: "string" },
+	},
 	{ name: "get_tree", doc: "Read the raw session tree.", result: "SessionTree" },
 	{
 		name: "set_todos",
@@ -269,6 +275,13 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		doc: "Select a model by provider and id.",
 		params: { provider: "string", modelId: "string" },
 		result: "ModelInfo",
+	},
+	{
+		name: "set_proxy_policy",
+		doc: "Set the session-owned proxy policy inherited by nested sessions.",
+		params: { policy: "ProxyPolicy" },
+		result: { policy: "ProxyPolicy" },
+		unwrap: "policy",
 	},
 	{ name: "cycle_model", doc: "Cycle to the next model.", result: "ModelCycleResult", nullable: true },
 	{

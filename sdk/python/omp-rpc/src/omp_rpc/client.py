@@ -24,6 +24,9 @@ from ._wire import (
     ImageContent,
     MessageEndEvent,
     PromptResultEvent,
+    ProxyDirectRoute,
+    ProxyPolicy,
+    ProxyRoute,
     ReadyEvent,
     RpcAgentEvent,
     RpcNotification,
@@ -36,6 +39,7 @@ from ._wire import (
     WireClient,
     parse_agent_message,
     parse_notification,
+    parse_proxy_policy,
     parse_todo_phase,
 )
 from ._wire_runtime import (
@@ -957,6 +961,23 @@ class RpcClient(WireClient):
         if timed_out:
             payload["timedOut"] = True
         self._send_notification(payload)
+
+    def set_proxy_policy(self, policy: ProxyPolicy) -> ProxyPolicy:
+        """Set the session-owned policy without changing global proxy configuration."""
+        def encode_route(route: ProxyRoute) -> JsonObject:
+            if isinstance(route, ProxyDirectRoute):
+                return {"mode": "direct"}
+            return {"mode": "proxy", "url": route.url}
+
+        payload: JsonObject = {"enabled": policy.enabled}
+        if policy.default is not None:
+            payload["default"] = encode_route(policy.default)
+        if policy.providers is not None:
+            payload["providers"] = {name: encode_route(route) for name, route in policy.providers.items()}
+        if policy.no_proxy is not None:
+            payload["noProxy"] = list(policy.no_proxy)
+        data = self._command("set_proxy_policy", {"policy": payload})
+        return required(expect_object(data, "set_proxy_policy"), "policy", parse_proxy_policy, "set_proxy_policy")
 
     def get_todos(self) -> tuple[TodoPhase, ...]:
         return self.get_state().todo_phases

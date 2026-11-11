@@ -2710,6 +2710,60 @@ impl ApprovalMode {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProxyDirectRoute {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProxyServerRoute {
+	pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProxyRoute {
+	Direct(ProxyDirectRoute),
+	Proxy(ProxyServerRoute),
+}
+
+impl ProxyRoute {
+	/// Decodes from JSON, dispatching on `mode`.
+	pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+		let decode: fn(Value) -> Result<Self, serde_json::Error> = match value.get("mode").and_then(Value::as_str) {
+			Some("direct") => |value| serde_json::from_value(value).map(Self::Direct),
+			Some("proxy") => |value| serde_json::from_value(value).map(Self::Proxy),
+			other => {
+				return Err(serde_json::Error::custom(format!("unknown ProxyRoute mode {other:?}")));
+			}
+		};
+		decode(value)
+	}
+}
+
+impl Serialize for ProxyRoute {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		match self {
+			Self::Direct(member) => serialize_tagged(member, &[("mode", "direct")], serializer),
+			Self::Proxy(member) => serialize_tagged(member, &[("mode", "proxy")], serializer),
+		}
+	}
+}
+
+impl<'de> Deserialize<'de> for ProxyRoute {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		Self::from_value(Value::deserialize(deserializer)?).map_err(D::Error::custom)
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProxyPolicy {
+	pub enabled: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub default: Option<ProxyRoute>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub providers: Option<BTreeMap<String, ProxyRoute>>,
+	#[serde(rename = "noProxy", default, skip_serializing_if = "Option::is_none")]
+	pub no_proxy: Option<Vec<String>>,
+}
+
 /// `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MessageUpdates {
@@ -5429,6 +5483,20 @@ pub struct GetEntriesParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppendSessionAnnotationParams {
+	#[serde(rename = "customType")]
+	pub custom_type: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub data: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppendSessionAnnotationResult {
+	#[serde(rename = "entryId")]
+	pub entry_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetTodosParams {
 	pub phases: Vec<TodoPhase>,
 }
@@ -5576,6 +5644,16 @@ pub struct SetModelParams {
 	pub provider: String,
 	#[serde(rename = "modelId")]
 	pub model_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetProxyPolicyParams {
+	pub policy: ProxyPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetProxyPolicyResult {
+	pub policy: ProxyPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6745,6 +6823,25 @@ impl Command for GetEntriesCommand {
 	}
 }
 
+/// Append a display-only custom session entry without model input. Durable sessions acknowledge after their journal is flushed; noSession keeps its in-memory semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppendSessionAnnotationCommand {
+	#[serde(rename = "customType")]
+	pub custom_type: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub data: Value,
+}
+
+impl Command for AppendSessionAnnotationCommand {
+	const NAME: &'static str = "append_session_annotation";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = AppendSessionAnnotationResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AppendSessionAnnotationResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
 /// Read the raw session tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GetTreeCommand {}
@@ -7030,6 +7127,22 @@ impl Command for SetModelCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<ModelInfo>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Set the session-owned proxy policy inherited by nested sessions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetProxyPolicyCommand {
+	pub policy: ProxyPolicy,
+}
+
+impl Command for SetProxyPolicyCommand {
+	const NAME: &'static str = "set_proxy_policy";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ProxyPolicy;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<SetProxyPolicyResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.policy)
 	}
 }
 

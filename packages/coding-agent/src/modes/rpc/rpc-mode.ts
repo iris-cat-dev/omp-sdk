@@ -1423,6 +1423,7 @@ export interface RpcModeOptions {
 	createDictationController?: RpcDictationControllerFactory;
 	/** The session's MCP manager, so `/mcp` builtins resolve and reconnect live servers. */
 	mcpManager?: MCPManager;
+	onCustomFrame?: (frame:unknown)=>boolean;
 }
 
 /**
@@ -1776,6 +1777,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// Hold ordinary commands in arrival order until the initialized command loop exists.
 	let heldFrames: unknown[] | undefined = [];
 	const receiveFrame = (parsed: unknown): void => {
+		if(options.onCustomFrame?.(parsed))return;
 		if (!heldFrames) {
 			inputDispatcher.dispatch(parsed);
 		} else if (isRpcExtensionUIResponse(parsed)) {
@@ -2454,6 +2456,16 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				} catch (err) {
 					return error(id, "get_entries", err instanceof Error ? err.message : String(err), "unknown_since");
 				}
+			}
+
+			case "append_session_annotation": {
+				if (typeof command.customType !== "string" || command.customType.length === 0 || !("data" in command)) {
+					return error(id, "append_session_annotation", "Session annotation requires customType and JSON data", "invalid_annotation");
+				}
+				const entryId = session.sessionManager.appendCustomEntry(command.customType, command.data);
+				await session.sessionManager.ensureOnDisk();
+				await session.sessionManager.flush();
+				return success(id, "append_session_annotation", { entryId });
 			}
 
 			case "get_tree": {

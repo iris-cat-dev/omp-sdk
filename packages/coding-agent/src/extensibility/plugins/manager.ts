@@ -31,6 +31,8 @@ import type {
 	InstalledPlugin,
 	InstallOptions,
 	PluginManifest,
+	PluginManagement,
+	PluginManagementPatch,
 	PluginRuntimeConfig,
 	PluginSettingSchema,
 	ProjectPluginOverrides,
@@ -179,11 +181,12 @@ export class PluginManager {
 	// Runtime Config Management
 	// ==========================================================================
 
-	async #readRuntimeConfigAt(lockPath: string): Promise<PluginRuntimeConfig> {
+	async #readRuntimeConfigAt(lockPath: string, strict = false): Promise<PluginRuntimeConfig> {
 		try {
 			return normalizePluginRuntimeConfig(await runtime.file(lockPath).json());
 		} catch (err) {
 			if (isEnoent(err)) return normalizePluginRuntimeConfig({});
+			if (strict) throw err;
 			logger.warn("Failed to load plugin runtime config", { path: lockPath, error: String(err) });
 			return normalizePluginRuntimeConfig({});
 		}
@@ -205,12 +208,13 @@ export class PluginManager {
 		await writePluginRuntimeConfig(getPluginsLockfile(), config);
 	}
 
-	async #loadProjectOverrides(): Promise<ProjectPluginOverrides> {
+	async #loadProjectOverrides(strict = false): Promise<ProjectPluginOverrides> {
 		const overridesPath = getProjectPluginOverridesPath(this.#cwd);
 		try {
 			return await runtime.file(overridesPath).json();
 		} catch (err) {
 			if (isEnoent(err)) return {};
+			if (strict) throw err;
 			logger.warn("Failed to load project plugin overrides", { path: overridesPath, error: String(err) });
 			return {};
 		}
@@ -901,7 +905,7 @@ export class PluginManager {
 			if (await this.#isMarketplaceRuntimeLink(name, deps, marketplaceRuntimeRealpaths, pluginPath)) continue;
 			const plugin = await this.#resolvePlugin(name, pluginPath, config, projectOverrides);
 			if (plugin) {
-				plugins.push(plugin);
+				plugins.push({ ...plugin, scope: "user", source: deps[name] ?? plugin.path, linked: !Object.hasOwn(deps, name) || /^(file|link|workspace|portal):/i.test(deps[name]) });
 			}
 		}
 
@@ -1017,6 +1021,83 @@ export class PluginManager {
 
 		config.plugins[name].enabledFeatures = features;
 		await this.#saveRuntimeConfig();
+	}
+
+	/** Manage the selected installation without loading factories or restarting sessions. */
+	async managePlugin(name: string, scope?: "user" | "project", patch?: PluginManagementPatch): Promise<PluginManagement> {
+		const projectRegistry = await resolveActiveProjectRegistryPath(this.#cwd);
+		const overrides = await this.#loadProjectOverrides(true);
+		const roots = [
+			...(projectRegistry ? [{ scope: "project" as const, root: path.dirname(projectRegistry), registry: projectRegistry }] : []),
+			{ scope: "user" as const, root: getPluginsDir(), registry: getInstalledPluginsRegistryPath() },
+		];
+		let selected: { scope: "user" | "project"; root: string; plugin: InstalledPlugin; config: PluginRuntimeConfig } | undefined;
+		for (const candidate of roots) {
+			if (scope && candidate.scope !== scope) continue;
+			const config = await this.#readRuntimeConfigAt(path.join(candidate.root, "omp-plugins.lock.json"), true);
+			const registry = await readInstalledPluginsRegistry(candidate.registry);
+			const entries = registry.plugins[name]?.filter(entry => (entry.scope ?? "user") === candidate.scope);
+			if (entries && entries.length > 1) throw new Error("Ambiguous native installation; select an unambiguous scope");
+			const pluginPath = entries?.[0]?.installPath ?? path.join(candidate.root, "node_modules", name);
+			if (!entries?.length) {
+				const deps = await this.#readDeps(path.join(candidate.root, "package.json"));
+				if (!this.#collectInstalledNames(deps, config).has(name)) continue;
+			}
+			const plugin = await this.#resolvePlugin(name, pluginPath, config, {});
+			if (!plugin) throw new Error("This native installation has no OMP settings or feature manifest");
+			const active = plugin.enabled && !overrides.disabled?.includes(plugin.name);
+			if (!selected || active) selected = { ...candidate, plugin, config };
+			if (scope || active) break;
+		}
+		if (!selected) throw new Error("Native plugin installation not found in the selected scope");
+		const { plugin, config } = selected;
+		const schema = plugin.manifest.settings ?? {};
+		const available = plugin.manifest.features ?? {};
+		if (patch) {
+			for (const key of [...Object.keys(patch.settings ?? {}), ...(patch.deleteSettings ?? [])]) {
+				if (!Object.hasOwn(schema, key)) throw new Error("Unknown native setting");
+				if (schema[key].secret) throw new Error("Secret input is unavailable in Desktop; use the selected OMP CLI");
+			}
+			for (const [key, value] of Object.entries(patch.settings ?? {})) {
+				if (!validateSetting(value, schema[key]).valid || (schema[key].type === "enum" && typeof value !== "string") || (typeof value === "number" && !Number.isFinite(value))) throw new Error("Invalid native setting value");
+			}
+			if (patch.enabledFeatures !== undefined && patch.enabledFeatures !== null) {
+				if (patch.enabledFeatures.some(feature => !Object.hasOwn(available, feature))) throw new Error("Unknown native feature");
+			}
+			config.settings[plugin.name] ??= {};
+			Object.assign(config.settings[plugin.name], patch.settings);
+			for (const key of patch.deleteSettings ?? []) delete config.settings[plugin.name][key];
+			if (patch.enabledFeatures !== undefined) {
+				config.plugins[plugin.name] ??= { version: plugin.version, enabled: plugin.enabled, enabledFeatures: null };
+				config.plugins[plugin.name].enabledFeatures = patch.enabledFeatures;
+			}
+			await writePluginRuntimeConfig(path.join(selected.root, "omp-plugins.lock.json"), config);
+			if (selected.scope === "user") this.#runtimeConfig = config;
+		}
+		const values = config.settings[plugin.name] ?? {};
+		const settings: PluginManagement["settings"] = {};
+		const safeSchema: PluginManagement["schema"] = {};
+		const secretConfigured: Record<string, boolean> = {};
+		for (const [key, definition] of Object.entries(schema)) {
+			const { default: defaultValue, ...metadata } = definition;
+			safeSchema[key] = definition.secret ? metadata as PluginSettingSchema : definition;
+			const value = (definition.secret ? overrides.settings?.[plugin.name]?.[key] : undefined) ?? values[key] ?? (definition.env ? process.env[definition.env] : undefined) ?? defaultValue;
+			if (definition.secret) {
+				secretConfigured[key] = value !== undefined && value !== null && value !== "";
+			} else if (value !== undefined) {
+				const parsed = typeof value === "string" ? parseSettingValue(value, definition) : value;
+				if (validateSetting(parsed, definition).valid && (definition.type !== "enum" || typeof parsed === "string") && (typeof parsed !== "number" || Number.isFinite(parsed)) && (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean")) settings[key] = parsed;
+			}
+		}
+		const enabledFeatures = config.plugins[plugin.name]?.enabledFeatures ?? null;
+		return {
+			name, scope: selected.scope, schema: safeSchema, settings, secretConfigured, enabledFeatures,
+			availableFeatures: Object.fromEntries(Object.entries(available).map(([key, feature]) => [key, { description: feature.description, default: feature.default }])),
+			effectiveFeatures: overrides.features?.[plugin.name] ?? enabledFeatures ?? Object.keys(available).filter(key => available[key].default),
+			overriddenSettings: Object.keys(overrides.settings?.[plugin.name] ?? {}).filter(key => Object.hasOwn(schema, key)),
+			featuresOverridden: Object.hasOwn(overrides.features ?? {}, plugin.name),
+			secretInput: "unavailable", appliesTo: "new-or-resumed-sessions",
+		};
 	}
 
 	// ==========================================================================

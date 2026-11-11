@@ -92,6 +92,27 @@ export interface EnumSetting extends PluginSettingBase {
 
 export type PluginSettingSchema = StringSetting | NumberSetting | BooleanSetting | EnumSetting;
 
+export interface PluginManagementPatch {
+	enabledFeatures?: string[] | null;
+	settings?: Record<string, string | number | boolean>;
+	deleteSettings?: string[];
+}
+
+export interface PluginManagement {
+	name: string;
+	scope: "user" | "project";
+	schema: Record<string, PluginSettingSchema>;
+	settings: Record<string, string | number | boolean>;
+	secretConfigured: Record<string, boolean>;
+	enabledFeatures: string[] | null;
+	availableFeatures: Record<string, Pick<PluginFeature, "description" | "default">>;
+	overriddenSettings: string[];
+	featuresOverridden: boolean;
+	effectiveFeatures: string[];
+	secretInput: "unavailable";
+	appliesTo: "new-or-resumed-sessions";
+}
+
 // =============================================================================
 // Installed Plugin Types
 // =============================================================================
@@ -106,6 +127,10 @@ export interface InstalledPlugin {
 	version: string;
 	/** Absolute path to package directory */
 	path: string;
+	/** Native installation source; local links are never upgrade candidates. */
+	source?: string;
+	linked?: boolean;
+	scope?: "user" | "project";
 	/** Parsed omp/pi manifest */
 	manifest: PluginManifest;
 	/**

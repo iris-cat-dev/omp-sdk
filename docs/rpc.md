@@ -30,6 +30,7 @@ Behavior notes:
 - RPC/ACP pin neutral defaults for settings declaring the corresponding `protocolDefault`, including task isolation/execution, memory, advisor, and advisor tier settings. RPC additionally pins async-job and bash/eval auto-background defaults. Explicit project/global config, `--config`, and isolated settings remain authoritative; on-disk config changes are watched in long-lived CLI RPC processes. Todo settings are not host-defaulted.
 - The process claims stdin before extension discovery, then parses it one non-empty JSONL line at a time. Malformed JSON emits a recoverable `command: "parse"` failure and does not terminate the loop.
 - At startup it writes a `ready` frame before processing commands. The frame advertises supported protocol versions and transport limits.
+- The Node SDK creates durable session headers before `ready`, so a newly opened idle session can be read or resumed immediately. `noSession` keeps its existing in-memory behavior.
 - Extension startup (`session_start`) runs after `ready`. While it runs, `extension_ui_response`, `set_ask_dialog`, and `set_approval_mode` are handled immediately; ordinary commands wait, in order, until startup finishes (a malformed line still gets its `parse` failure at once). If stdin closes during startup, dialogs the extension awaits are rejected so startup can finish.
 - When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, pending stdout is delivered, and normal shutdown exits with code `0`. A session-persistence failure still latched at disposal exits with code `1` after delivering its `notice` frame.
 - Responses/events are written as one JSON object per line.
@@ -153,6 +154,7 @@ Important edge behavior from runtime:
 - `{ id?, type: "get_available_commands" }`
 - `{ id?, type: "execute_extension_command", name: string, args?: string }`
 - `{ id?, type: "get_entries", since?: string }`
+- `{ id?, type: "append_session_annotation", customType: string, data: JSON }`
 - `{ id?, type: "get_tree" }`
 - `{ id?, type: "set_todos", phases: TodoPhase[] }`
 - `{ id?, type: "set_host_tools", tools: RpcHostToolDefinition[] }`
@@ -254,6 +256,15 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 `navigate_tree` moves the session's leaf to `entryId` in the same session file, as the interactive `/tree` selector does: a user message rewinds past itself (the leaf moves to its parent and `editorText` carries its text), any other entry becomes the leaf. With `summarize`, the abandoned branch is summarized by the session's model (with `customInstructions`, if given) and the summary entry lands at the target. A refusal never moves the leaf or writes to the transcript. An unknown `entryId` (`code: "entry_not_found"`) and a session already busy when the command runs (`code: "session_busy"`, as for `fork`) are refused before any side effect, so a running `btw` question and a waiting goal continuation are left alone. Two refusals come after the navigation has started, so they still cancel a running `btw` question (a waiting goal continuation is held and then resumes): `code: "session_busy"` when work started while the summary was generated, and `code: "ask_reanswer_unsupported"` for an `ask` tool result whose questions the interactive picker could reopen, since re-answering needs that picker (an `ask` result whose original questions cannot be recovered is a plain leaf move). A goal continuation waiting to start is held until the navigation ends and then runs on the new leaf. Read the new transcript with `get_messages`. `abort_branch_summary` stops a running summary: that `navigate_tree` answers `{ cancelled: true, aborted: true }` and nothing moves; it skips the command queue, which would otherwise hold it behind the `navigate_tree` it stops.
 
 `set_label` sets an entry's label, or clears it when `label` is omitted; it fails for an unknown `entryId`.
+
+Use `append_session_annotation` to retain a local UI submission without adding it to the model conversation. It appends a native `custom` entry and returns `{ entryId }` after the durable journal is flushed. `get_entries` and `get_tree` expose it; `get_messages` does not. Empty `customType` or missing `data` is rejected, and persistence failures are returned to the caller. `noSession` stores the entry only in memory.
+
+```ts
+await client.appendSessionAnnotation({
+	customType: "desktop-local-submission",
+	data: { clientMessageId: "local-1", text: "/save-local" },
+});
+```
 
 ### Messages
 

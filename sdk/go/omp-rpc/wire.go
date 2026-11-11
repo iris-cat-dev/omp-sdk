@@ -1976,6 +1976,120 @@ func (v *ApprovalMode) UnmarshalJSON(data []byte) error {
 	return unknownValue("ApprovalMode", s)
 }
 
+type ProxyDirectRoute struct{}
+
+func (v *ProxyDirectRoute) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ProxyDirectRoute", v.decodeFrom)
+}
+
+func (v *ProxyDirectRoute) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ProxyDirectRoute
+	d := fieldDecoder{raw: raw, owner: "ProxyDirectRoute"}
+	d.constant("mode", "direct")
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v ProxyDirectRoute) MarshalJSON() ([]byte, error) {
+	type plain ProxyDirectRoute
+	return encodeObject(plain(v), `"mode":"direct"`, nil)
+}
+
+type ProxyServerRoute struct {
+	URL string `json:"url"`
+}
+
+func (v *ProxyServerRoute) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ProxyServerRoute", v.decodeFrom)
+}
+
+func (v *ProxyServerRoute) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ProxyServerRoute
+	d := fieldDecoder{raw: raw, owner: "ProxyServerRoute"}
+	d.constant("mode", "proxy")
+	d.required("url", &out.URL)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v ProxyServerRoute) MarshalJSON() ([]byte, error) {
+	type plain ProxyServerRoute
+	return encodeObject(plain(v), `"mode":"proxy"`, nil)
+}
+
+type ProxyRoute struct {
+	// Value holds one variant, chosen by "mode" on decode.
+	Value ProxyRouteVariant
+}
+
+// ProxyRouteVariant is implemented by the types ProxyRoute can hold.
+type ProxyRouteVariant interface {
+	isProxyRoute()
+}
+
+func (ProxyDirectRoute) isProxyRoute() {}
+func (ProxyServerRoute) isProxyRoute() {}
+
+func (v ProxyRoute) MarshalJSON() ([]byte, error) {
+	return encodeVariant("ProxyRoute", v.Value)
+}
+
+func (v *ProxyRoute) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ProxyRoute", v.decodeFrom)
+}
+
+func (v *ProxyRoute) decodeFrom(raw map[string]json.RawMessage) error {
+	tag, err := unionTag(raw, "ProxyRoute", "mode")
+	if err != nil {
+		return err
+	}
+	var value ProxyRouteVariant
+	switch tag {
+	case "direct":
+		value, err = decodeVariant[ProxyDirectRoute](raw)
+	case "proxy":
+		value, err = decodeVariant[ProxyServerRoute](raw)
+	default:
+		return unknownValue("ProxyRoute.mode", tag)
+	}
+	if err != nil {
+		return err
+	}
+	v.Value = value
+	return nil
+}
+
+type ProxyPolicy struct {
+	Enabled   bool                  `json:"enabled"`
+	Default   *ProxyRoute           `json:"default,omitempty"`
+	Providers map[string]ProxyRoute `json:"providers,omitempty"`
+	NoProxy   []string              `json:"noProxy,omitempty"`
+}
+
+func (v *ProxyPolicy) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ProxyPolicy", v.decodeFrom)
+}
+
+func (v *ProxyPolicy) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ProxyPolicy
+	d := fieldDecoder{raw: raw, owner: "ProxyPolicy"}
+	d.required("enabled", &out.Enabled)
+	d.optional("default", &out.Default)
+	d.optional("providers", &out.Providers)
+	d.optional("noProxy", &out.NoProxy)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 // `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches.
 type MessageUpdates string
 
@@ -7554,6 +7668,25 @@ func (v *ExecuteExtensionCommandResult) decodeFrom(raw map[string]json.RawMessag
 	return nil
 }
 
+type AppendSessionAnnotationResult struct {
+	EntryID string `json:"entryId"`
+}
+
+func (v *AppendSessionAnnotationResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AppendSessionAnnotationResult", v.decodeFrom)
+}
+
+func (v *AppendSessionAnnotationResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AppendSessionAnnotationResult
+	d := fieldDecoder{raw: raw, owner: "AppendSessionAnnotationResult"}
+	d.required("entryId", &out.EntryID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SetTodosResult struct {
 	TodoPhases []TodoPhase `json:"todoPhases"`
 }
@@ -7760,6 +7893,25 @@ func (v *DictationStopResult) decodeFrom(raw map[string]json.RawMessage) error {
 	var out DictationStopResult
 	d := fieldDecoder{raw: raw, owner: "DictationStopResult"}
 	d.required("text", &out.Text)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SetProxyPolicyResult struct {
+	Policy ProxyPolicy `json:"policy"`
+}
+
+func (v *SetProxyPolicyResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SetProxyPolicyResult", v.decodeFrom)
+}
+
+func (v *SetProxyPolicyResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SetProxyPolicyResult
+	d := fieldDecoder{raw: raw, owner: "SetProxyPolicyResult"}
+	d.required("policy", &out.Policy)
 	if d.err != nil {
 		return d.err
 	}
@@ -8311,6 +8463,19 @@ func (c Commands) GetEntries(ctx context.Context, p GetEntriesCommand) (SessionE
 	return out, err
 }
 
+// AppendSessionAnnotationCommand holds the parameters of "append_session_annotation".
+type AppendSessionAnnotationCommand struct {
+	CustomType string          `json:"customType"`
+	Data       json.RawMessage `json:"data"`
+}
+
+// AppendSessionAnnotation sends "append_session_annotation": Append a display-only custom session entry without model input. Durable sessions acknowledge after their journal is flushed; noSession keeps its in-memory semantics.
+func (c Commands) AppendSessionAnnotation(ctx context.Context, p AppendSessionAnnotationCommand) (AppendSessionAnnotationResult, error) {
+	var out AppendSessionAnnotationResult
+	err := c.call(ctx, "append_session_annotation", p, 0, &out)
+	return out, err
+}
+
 // GetTree sends "get_tree": Read the raw session tree.
 func (c Commands) GetTree(ctx context.Context) (SessionTree, error) {
 	var out SessionTree
@@ -8494,6 +8659,18 @@ func (c Commands) SetModel(ctx context.Context, p SetModelCommand) (ModelInfo, e
 	var out ModelInfo
 	err := c.call(ctx, "set_model", p, 0, &out)
 	return out, err
+}
+
+// SetProxyPolicyCommand holds the parameters of "set_proxy_policy".
+type SetProxyPolicyCommand struct {
+	Policy ProxyPolicy `json:"policy"`
+}
+
+// SetProxyPolicy sends "set_proxy_policy": Set the session-owned proxy policy inherited by nested sessions.
+func (c Commands) SetProxyPolicy(ctx context.Context, p SetProxyPolicyCommand) (ProxyPolicy, error) {
+	var out SetProxyPolicyResult
+	err := c.call(ctx, "set_proxy_policy", p, 0, &out)
+	return out.Policy, err
 }
 
 // CycleModel sends "cycle_model": Cycle to the next model.

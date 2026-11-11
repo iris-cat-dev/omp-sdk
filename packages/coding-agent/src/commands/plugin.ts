@@ -15,6 +15,7 @@ const ACTIONS: PluginAction[] = [
 	"doctor",
 	"check",
 	"features",
+	"manage",
 	"config",
 	"enable",
 	"disable",
@@ -52,7 +53,7 @@ export default class Plugin extends Command {
 		local: Flags.boolean({ char: "l", description: "Operate on local plugin directory" }),
 		enable: Flags.string({ description: "Enable a feature" }),
 		disable: Flags.string({ description: "Disable a feature" }),
-		set: Flags.string({ description: "Set plugin config (key=value)" }),
+		set: Flags.string({ description: "Set features, or JSON patch for plugin manage" }),
 		scope: Flags.string({
 			description: 'Install scope: "user" (default) or "project"',
 			options: ["user", "project"],

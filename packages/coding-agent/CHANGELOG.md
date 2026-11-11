@@ -10,12 +10,14 @@
 - Added native capability inspection and actionable disabled-feature errors before downloads or native construction; caller-owned SDP live signaling remains available without native WebRTC.
 - Added Node SDK plugin-management commands and Desktop provider-helper imports without requiring an OMP executable or bundled Bun runtime.
 - Added runtime plugin startup checks and `omp plugin check --fix` to persistently disable failing plugins while preserving healthy plugins, scope, settings, and feature selection.
+- Added `PluginManager.managePlugin()` and `omp plugin manage` for exact-identity, scoped feature/configuration management without loading plugin factories. Desktop projections validate declared settings, redact secret defaults and values, report configured-secret and project-override markers, and retain `null` versus empty feature selections. Native list JSON exposes profile-resolved marketplace paths.
 - Added `createAgentSession({ proxyPolicy })`, `session.setProxyPolicy()` / `getProxyPolicy()`, and RPC `set_proxy_policy` for isolated live conversation routing inherited by nested sessions.
 - Added explicit runtime resource inventory and release through `AgentSession.getRuntimeResources()` / `releaseRuntimeResource(resourceId)` and RPC `get_runtime_resources` / `release_runtime_resource`, reporting ownership, live handles, retention reasons and releasability; busy/shared resources and background dependencies refuse destructive release.
 - Added `setToolEnabled(name, enabled)` for queued single-tool selection changes that retain concurrently registered tools and unrelated presentation ([#122](https://github.com/iris-cat-dev/omp/issues/122)).
 - Added command-only RPC execution for registered extension commands, with explicit missing-command failure instead of submitting model input ([#129](https://github.com/iris-cat-dev/omp/issues/129)).
 - Added stable client message identities for prompt, steer, follow-up, and branch history so hosts can reconcile transformed or repeated submissions without matching their text.
 - Added read-only `get_prompt_context` RPC inspection of current system blocks, messages, tool definitions, source metadata, and token attribution without starting model generation.
+- Added `append_session_annotation` RPC and `RpcClient.appendSessionAnnotation()` for custom journal entries that stay outside model messages; durable sessions acknowledge after flushing, while `noSession` remains in memory.
 - Added queueable compaction: `/compact` sent with the follow-up key (Ctrl+Q) while the agent works now runs when it yields instead of interrupting it ([#17397](https://github.com/can1357/oh-my-pi/pull/17397) by [@H4vC](https://github.com/H4vC))
 
 ### Changed
@@ -34,6 +36,7 @@
 ### Fixed
 
 - Fixed invalid or over-limit image inputs blocking every later conversation turn: rejected image history is removed durably while text and tool results remain, including when reopening a previously stuck session.
+- Fixed durable Node RPC sessions announcing ready before creating their journal header, leaving untouched idle sessions unavailable to history readers; RPC shutdown also disposes the session before closing daemon presence.
 - Fixed filtered or nested image-history edits creating self-referential cold-entry facades and failing persisted history rewrites.
 - Fixed startup model discovery leaving live service-tier capabilities stale when the model's context window was unchanged, delaying Ultrafast controls until a later session refresh.
 - Fixed `ask` failing in Node SDK sessions before showing a question.
