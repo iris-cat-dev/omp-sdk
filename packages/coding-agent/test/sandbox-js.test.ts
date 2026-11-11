@@ -154,6 +154,7 @@ describe.skipIf(process.platform === "win32")("sandbox_js isolated QuickJS behav
 		const { files } = await fixture();
 		const failure = await execute(files, code);
 		expect(failure.isError).toBe(true);
+		if (_name === "recursive stack") expect(failure.text).toMatch(/RangeError.*stack/i);
 		expect(failure.text).not.toContain("CPU budget");
 		expect(failure.text).not.toContain(process.cwd());
 		expect(JSON.parse((await execute(files, `return "recovered";`)).text).result).toBe("recovered");

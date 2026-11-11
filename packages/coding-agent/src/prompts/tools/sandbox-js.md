@@ -8,6 +8,6 @@ Available APIs:
 
 No shell, Node globals, host imports, host paths, localhost/private/metadata access, or ambient host proxies, Cookies, or credentials. Without networking, `fetch` is absent.
 
-Limits: source 64 KiB, guest memory 32 MiB (a hard WASM linear-memory ceiling, including VM overhead), guest stack guard 512 KiB to leave headroom for the host call stack, cumulative guest CPU 5 seconds, total wall time 30 seconds, JSON result 256 KiB, logs 64 KiB, public error text 8 KiB. Network waiting consumes wall time, not guest CPU. Completion or cancellation closes outstanding requests.
+Limits: source 64 KiB, guest memory 32 MiB (a hard WASM linear-memory ceiling, including VM overhead), guest stack guard 128 KiB to leave headroom for the host call stack, cumulative guest CPU 5 seconds, total wall time 30 seconds, JSON result 256 KiB, logs 64 KiB, public error text 8 KiB. Network waiting consumes wall time, not guest CPU. Completion or cancellation closes outstanding requests.
 
 The tool returns JSON `{ "result": ..., "logs": [...] }`; `undefined` becomes `null`. Results must be JSON serializable. Failures are tool errors; file writes already performed are not rolled back. Guest memory and globals never persist between calls.

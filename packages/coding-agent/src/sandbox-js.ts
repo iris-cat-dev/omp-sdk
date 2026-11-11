@@ -15,8 +15,8 @@ import sandboxJsDescription from "./prompts/tools/sandbox-js.md" with { type: "t
 
 const SOURCE_BYTES = 64 * 1024;
 const MEMORY_BYTES = 32 * 1024 * 1024;
-// Leave headroom for the host WASM call stack; a native trap cannot unwind QuickJS safely.
-const STACK_BYTES = 512 * 1024;
+// Conservative across host engines: a native WASM stack trap cannot unwind QuickJS safely.
+const STACK_BYTES = 128 * 1024;
 const RESULT_BYTES = 256 * 1024;
 const LOG_BYTES = 64 * 1024;
 const FILE_BYTES = 1024 * 1024;
@@ -115,6 +115,7 @@ async function runGuest(files: SandboxFs, networkEnabled: boolean, code: string,
 	if (signal?.aborted) cancel();
 	let failure: string | undefined;
 	let hostFailure: Error | undefined;
+	let executionFailure: Error | undefined;
 	const timer = setTimeout(() => {
 		failure = "JavaScript wall deadline exceeded (30 s)";
 		cancel();
@@ -185,6 +186,13 @@ async function runGuest(files: SandboxFs, networkEnabled: boolean, code: string,
 					const message = enter(() => context.getProp(handle, "message"));
 					try { text = context.typeof(message) === "string" ? context.getString(message) : "JavaScript guest threw a non-error value"; }
 					finally { message.dispose(); }
+					const name = enter(() => context.getProp(handle, "name"));
+					try {
+						if (context.typeof(name) === "string") {
+							const kind = context.getString(name);
+							if (kind && kind !== "Error") text = `${kind}: ${text}`;
+						}
+					} finally { name.dispose(); }
 				}
 				return toolResult(Buffer.byteLength(text) <= 8192 ? text : "JavaScript error message exceeds 8 KiB", true);
 			} finally { handle.dispose(); }
@@ -323,7 +331,8 @@ async function runGuest(files: SandboxFs, networkEnabled: boolean, code: string,
 		return toolResult(failure!, true);
 	} catch (error) {
 		if (error instanceof SandboxJsStopped) return toolResult(error.message, true);
-		throw new Error("Sandbox JavaScript host execution failed", { cause: error });
+		executionFailure = new Error("Sandbox JavaScript host execution failed", { cause: error });
+		throw executionFailure;
 	} finally {
 		closed = true;
 		clearTimeout(timer);
@@ -338,7 +347,8 @@ async function runGuest(files: SandboxFs, networkEnabled: boolean, code: string,
 			vm?.dispose();
 			runtime?.dispose();
 		} catch (error) {
-			throw new Error("Sandbox JavaScript resource cleanup failed", { cause: error });
+			const cause = executionFailure ? new AggregateError([executionFailure, error], "Sandbox JavaScript execution and cleanup both failed") : error;
+			throw new Error("Sandbox JavaScript resource cleanup failed", { cause });
 		} finally {
 			await Promise.allSettled(tasks);
 		}

@@ -37,6 +37,7 @@
 
 ### Fixed
 
+- Fixed recursive sandbox JavaScript failing QuickJS cleanup under Desktop's Node runtime. A conservative 128 KiB guest stack guard returns a guest `RangeError` and preserves recovery on the next tool call.
 - Fixed invalid or over-limit image inputs blocking every later conversation turn: rejected image history is removed durably while text and tool results remain, including when reopening a previously stuck session.
 - Fixed durable Node RPC sessions announcing ready before creating their journal header, leaving untouched idle sessions unavailable to history readers; RPC shutdown also disposes the session before closing daemon presence.
 - Fixed filtered or nested image-history edits creating self-referential cold-entry facades and failing persisted history rewrites.

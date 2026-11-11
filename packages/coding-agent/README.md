@@ -42,7 +42,7 @@ const { session } = await createAgentSession({
 });
 ```
 
-`javascript: true` adds `sandbox_js`. Code is an async function body with `return`, standard JavaScript, `console.log`, and synchronous `sandbox.read/write/list`. Each call uses a fresh QuickJS-NG WASM guest: no Node globals, host imports, shell, or persistent guest state. Limits are 64 KiB source, a 32 MiB hard WASM memory ceiling including VM overhead, a 512 KiB guest stack guard reserving host-call-stack headroom, 5 seconds cumulative guest CPU, 30 seconds total wall time, 256 KiB JSON result and 64 KiB logs. File writes already performed survive an error or cancellation.
+`javascript: true` adds `sandbox_js`. Code is an async function body with `return`, standard JavaScript, `console.log`, and synchronous `sandbox.read/write/list`. Each call uses a fresh QuickJS-NG WASM guest: no Node globals, host imports, shell, or persistent guest state. Limits are 64 KiB source, a 32 MiB hard WASM memory ceiling including VM overhead, a 128 KiB guest stack guard reserving host-call-stack headroom, 5 seconds cumulative guest CPU, 30 seconds total wall time, 256 KiB JSON result and 64 KiB logs. File writes already performed survive an error or cancellation.
 
 `network: "public"` adds `sandbox_fetch` and, when JavaScript is enabled, guest `fetch(url, { method, headers, body })`. It permits HTTP/HTTPS requests and data submission to arbitrary public addresses: authorized conversation users can send sandbox data off-host. Requests use a separate transport without ambient proxies, Cookies or credentials. Every DNS answer and redirect is checked; connections use a pinned public address. Private/localhost/metadata addresses, URL userinfo and transport/proxy headers are rejected. Cross-origin redirects clear explicit headers. Request and response bodies are limited to 1 MiB, redirects to five and the total request deadline to 30 seconds. Non-2xx responses retain their status and body. HEAD and HTTP no-content responses return an empty body without decoding representation headers. Guest responses provide `ok`, `status`, `url`, a lowercase header record, and async `text()`/`json()`.
 
@@ -63,7 +63,7 @@ bun test packages/coding-agent/test/sandbox-fs.test.ts packages/coding-agent/tes
 OMP_SANDBOX_TEST_RPC_ENTRY=/path/to/staged-sdk/dist/node/rpc.mjs bun test packages/coding-agent/test/node-rpc-sandbox.test.ts
 ```
 
-The RPC regression requires an explicit staged entry and otherwise skips; it inspects actual startup, tool mounting, literal prompts, provider request privacy and durable resume using an isolated local SSE transport. For genuine model tool calls, supply a real tool-capable provider and its approved credentials, isolate `HOME` and `PASEO_HOME`, then run:
+The RPC regression requires an explicit staged entry and otherwise skips; it inspects actual startup, tool mounting, literal prompts, provider request privacy and durable resume using an isolated local SSE transport. Its stack regression checks actual registered JavaScript execution and recovery in Node. Set `OMP_SANDBOX_TEST_NODE` to the Desktop executable to use its packaged Node runtime instead of `node` on `PATH`. For genuine model tool calls, supply a real tool-capable provider and its approved credentials, isolate `HOME` and `PASEO_HOME`, then run:
 
 ```sh
 node packages/coding-agent/scripts/smoke-sandbox.mjs /path/to/staged-sdk/dist/node openai/gpt-4o-mini

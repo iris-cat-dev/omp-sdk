@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { type as arkType } from "@oh-my-pi/omptype";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,6 +9,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 
 const configuredEntry = process.env.OMP_SANDBOX_TEST_RPC_ENTRY;
 const entry = configuredEntry ? path.resolve(configuredEntry) : "";
+const StackProbeSchema = arkType({ stackFailed: "true", guestError: "string", recovered: "number" });
 
 async function sandboxModelTransport(filesystem: typeof fs, url: string, options: { body: string }): Promise<Response> {
 	const body = JSON.parse(options.body);
@@ -33,6 +36,36 @@ async function sandboxModelTransport(filesystem: typeof fs, url: string, options
 	return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
 }
 describe.skipIf(!entry || !fs.existsSync(entry) || process.platform === "win32")("staged Node SDK sandbox RPC admission", () => {
+	test("registered JavaScript recursion stays a guest error and the next call recovers in Node", () => {
+		using temp = TempDir.createSync("@node-sandbox-stack-");
+		const root = temp.join("root"); const agentDir = temp.join("agent");
+		fs.mkdirSync(root); fs.mkdirSync(agentDir);
+		const sdkUrl = new URL("./sdk.mjs", pathToFileURL(entry));
+		const program = `import { AuthStorage, ModelRegistry, Settings, SessionManager, createAgentSession } from ${JSON.stringify(sdkUrl.href)};
+const root = ${JSON.stringify(root)}; const agentDir = ${JSON.stringify(agentDir)};
+const auth = await AuthStorage.create(${JSON.stringify(temp.join("auth.db"))});
+auth.keys.setRuntime("openai", "test-only-no-inference");
+const registry = new ModelRegistry(auth, ${JSON.stringify(temp.join("models.yml"))});
+const model = registry.find("openai", "gpt-4o-mini"); if (!model) throw new Error("Missing bundled model");
+let session;
+try {
+  ({session} = await createAgentSession({cwd:root, agentDir, sandbox:{root,javascript:true}, authStorage:auth, modelRegistry:registry, model, settings:Settings.isolated({"memory.backend":"off"}), sessionManager:SessionManager.inMemory(root)}));
+  const tool = session.getToolByName("sandbox_js"); if (!tool) throw new Error("Missing authorized JavaScript");
+  const text = result => result.content.filter(item => item.type === "text").map(item => item.text).join("");
+  const failed = await tool.execute("stack", {code:"function recurse(){return recurse()} return recurse();"}, undefined, () => {});
+  const recovered = await tool.execute("recover", {code:"return 6 * 7;"}, undefined, () => {});
+  process.stdout.write(JSON.stringify({stackFailed:failed.isError === true, guestError:text(failed), recovered:JSON.parse(text(recovered)).result}));
+} finally { await session?.dispose(); auth.close(); }`;
+		const probe = spawnSync(process.env.OMP_SANDBOX_TEST_NODE ?? "node", ["--input-type=module", "-e", program], {
+			cwd: root,
+			env: { PATH: process.env.PATH, HOME: temp.path(), PI_CODING_AGENT_DIR: agentDir, PASEO_HOME: temp.join("paseo"), ELECTRON_RUN_AS_NODE: "1" },
+			encoding: "utf8", timeout: 30_000,
+		});
+		expect(probe.status, probe.stderr).toBe(0);
+		const result = StackProbeSchema.assert(JSON.parse(probe.stdout));
+		expect(result.guestError).toMatch(/RangeError.*stack/i);
+		expect(result.recovered).toBe(42);
+	}, 35_000);
 		test("actual catalog and durable resume cannot inherit host tools, ambient prompts or command execution", async () => {
 			using temp = TempDir.createSync("@node-rpc-sandbox-");
 			const root = temp.join("root"); const agentDir = temp.join("agent");
