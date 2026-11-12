@@ -141,4 +141,75 @@ describe.skipIf(process.platform === "win32")("SDK mandatory sandbox lifecycle",
 		try { await expect(createAgentSession({ ...options, sandbox: { root }, sessionManager: changed })).rejects.toThrow("capabilities do not match"); }
 		finally { await changed.close(); }
 	});
+	test("image grant is independent, immutable and durable; ordinary sandbox ignores image host callbacks", async () => {
+		const { root, directory, options, create } = await fixture();
+		let initialized = 0;
+		const sandboxImageSettings = async () => { initialized++; return { prepare: () => { throw new Error("Host image generation is disabled"); }, dispose() {} }; };
+		const ordinary = await create({ sandboxImageSettings });
+		assertBoundary(ordinary, root); expect(initialized).toBe(0);
+		const sandbox = { root, imageGeneration: true };
+		const journalDir = path.join(directory, "image-journals");
+		const session = await create({ sandbox, sandboxImageSettings, sessionManager: SessionManager.create(root, journalDir) });
+		expect(session.getAllToolNames().sort()).toEqual(["generate_image", ...names]);
+		expect(session.getToolByName("sandbox_fetch")).toBeUndefined();
+		expect(Object.isFrozen(session.sandbox)).toBe(true);
+		await expect(session.setActiveToolsByName(["read"])).rejects.toThrow("Sandbox");
+		await session.sessionManager.ensureOnDisk(); await session.sessionManager.flush();
+		const file = session.sessionFile!; await session.dispose();
+		const resumed = await create({ sandbox, sandboxImageSettings, sessionManager: await SessionManager.open(file, journalDir) });
+		expect(resumed.getAllToolNames()).toContain("generate_image");
+		const changed = await SessionManager.open(file, journalDir);
+		try { await expect(createAgentSession({ ...options, sessionManager: changed })).rejects.toThrow("capabilities do not match"); } finally { await changed.close(); }
+	});
+	test("authorized native image HTTP generation persists real bytes, denies input links and emits no artifacts on failure or cancellation", async () => {
+		const { root, directory, create } = await fixture();
+		const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aShoAAAAASUVORK5CYII=", "base64");
+		let fail = false; let enabled = true; let requests = 0;
+		let lastBody: { input_references?: Array<{ url: string }> } = {};
+		const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+			requests++; expect(request.headers.get("authorization")).toBe("Bearer test-image-only");
+			lastBody = await request.json() as typeof lastBody;
+			if (fail) return new Response("provider failure", { status: 400 });
+			return Response.json({ data: [{ b64_json: png.toString("base64") }] });
+		} });
+		cleanups.push(async () => { await server.stop(true); });
+		const session = await create({ sandbox: { root, imageGeneration: true, javascript: true }, sandboxImageSettings: async registry => {
+			registry.registerProvider("sandbox-image-test", { baseUrl: `${server.url.origin}/v1`, api: "openai-images", apiKey: "test-image-only", models: [{ id: "gpt-image-1", name: "test", api: "openai-images", kind: "image", reasoning: false, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 }] }, "<test>");
+			return { prepare: (_id, params) => { if (!enabled) throw new Error("disabled"); return { ...params, model: "sandbox-image-test/gpt-image-1" }; }, dispose() {} };
+		} });
+		await fs.writeFile(path.join(root, "oversize.txt"), "x".repeat(1024 * 1024 + 1));
+		expect((await session.getToolByName("sandbox_read")!.execute("bounded-read", { path: "oversize.txt" })).isError).toBe(true);
+		expect((await session.getToolByName("sandbox_js")!.execute("bounded-js-read", { code: "return sandbox.read('oversize.txt');" })).isError).toBe(true);
+		const tool = session.getToolByName("generate_image")!;
+		const result = await tool.execute("real-bytes", { subject: "A red pixel" });
+		const details = result.details as { generatedImagesSource: string; generatedImages: Array<{ path: string; mimeType: string }> };
+		expect(details.generatedImagesSource).toBe("omp-sandbox-image");
+		expect(details.generatedImages[0]!.mimeType).toBe("image/png");
+		expect(await fs.readFile(path.join(root, details.generatedImages[0]!.path))).toEqual(png);
+		expect(JSON.stringify(result)).not.toContain(directory); expect(JSON.stringify(result)).not.toContain("test-image-only");
+		expect(result.details).not.toHaveProperty("provider"); expect(result.details).not.toHaveProperty("model"); expect(result.details).not.toHaveProperty("imagePaths");
+		expect(result.details).toMatchObject({ images: [{ data: png.toString("base64"), mimeType: "image/png" }] });
+		await fs.writeFile(path.join(root, "reference.png"), png);
+		const edited = await tool.execute("edit-real-bytes", { subject: "Edit pixel", input: [{ path: "reference.png" }] });
+		expect(lastBody.input_references?.[0]?.url).toBe(`data:image/png;base64,${png.toString("base64")}`);
+		expect(JSON.stringify(edited)).not.toContain(root);
+		const outside = path.join(directory, "outside.png"); await fs.writeFile(outside, png);
+		await fs.symlink(outside, path.join(root, "symbolic.png")); await fs.link(outside, path.join(root, "hard.png"));
+		for (const image of [outside, "../outside.png", "symbolic.png", "hard.png", "https://example.com/image.png"]) await expect(tool.execute("denied-input", { subject: "Edit", input: [{ path: image }] })).rejects.toThrow("access denied");
+		await expect(tool.execute("inline", { subject: "Edit", input: [{ data: png.toString("base64"), mime_type: "image/png" }] })).rejects.toThrow();
+		await expect(tool.execute("inline-with-path", { subject: "Edit", input: [{ path: "reference.png", data: png.toString("base64") }] })).rejects.toThrow();
+		const before = requests; enabled = false;
+		await expect(tool.execute("disabled", { subject: "Disabled" })).rejects.toThrow("disabled"); expect(requests).toBe(before);
+		enabled = true; fail = true;
+		await expect(tool.execute("failed", { subject: "Failed" })).rejects.toThrow("Host image generation failed");
+		const controller = new AbortController(); controller.abort();
+		await expect(tool.execute("canceled", { subject: "Canceled" }, controller.signal)).rejects.toThrow();
+		expect(await fs.readdir(path.join(root, ".qqbot-media/generated"))).toHaveLength(2);
+		fail = false;
+		const outsideDirectory = path.join(directory, "outside-output"); await fs.mkdir(outsideDirectory);
+		await fs.rename(path.join(root, ".qqbot-media/generated"), path.join(directory, "saved-generated"));
+		await fs.symlink(outsideDirectory, path.join(root, ".qqbot-media/generated"));
+		await expect(tool.execute("linked-output", { subject: "Must stay inside" })).rejects.toThrow("Host image generation failed");
+		expect(await fs.readdir(outsideDirectory)).toEqual([]);
+	});
 });

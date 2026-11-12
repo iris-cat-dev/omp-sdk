@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added opt-in sandbox image generation through the host's native image settings, sandbox-only input/output files and profile-3 admission; QQ can upload generated images without exposing other host tools.
 - Added mandatory SDK sandbox sessions with a pinned native file namespace, fixed read/write/list capabilities, literal user prompt and model preference preservation, immutable tool admission, provider-request identity/path isolation, durable resume policy, and fail-closed Node SDK compatibility checks. Trusted gateways have a separate bounded binary filesystem entry; ordinary Desktop sessions retain their existing capabilities.
 - Added opt-in `sandbox_js` with fresh QuickJS-NG WASM guests, descriptor-bound UTF-8 file APIs, hard memory/CPU/output limits and cancellation; added `sandbox_fetch` for bounded arbitrary public HTTP/HTTPS requests with DNS/redirect validation and pinned connections. Guest networking reuses the same transport. File-only sessions remain the default; capability changes require a new conversation and Node RPC sandbox version 2.
 - Added a headless Node.js 24+ SDK backend with persistent sessions, native tools, extension loading, full RPC hosting, and a shared worker host; Bun CLI behavior remains available.
@@ -37,6 +38,7 @@
 
 ### Fixed
 
+- Improved `sandbox_fetch` with readable Markdown, bounded large-page previews, browser request headers, charset decoding and alternate validated-address connections; `raw: true` and guest JavaScript preserve complete source responses.
 - Fixed recursive sandbox JavaScript failing QuickJS cleanup under Desktop's Node runtime. A conservative 128 KiB guest stack guard returns a guest `RangeError` and preserves recovery on the next tool call.
 - Fixed invalid or over-limit image inputs blocking every later conversation turn: rejected image history is removed durably while text and tool results remain, including when reopening a previously stuck session.
 - Fixed durable Node RPC sessions announcing ready before creating their journal header, leaving untouched idle sessions unavailable to history readers; RPC shutdown also disposes the session before closing daemon presence.

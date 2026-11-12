@@ -2490,6 +2490,7 @@ export class AgentSession implements SettingsScope {
 			allowedToolNames: this.sandbox ? { sandbox_read: true, sandbox_write: true, sandbox_list: true,
 				...(this.sandbox.javascript ? { sandbox_js: true } : {}),
 				...(this.sandbox.network === "public" ? { sandbox_fetch: true } : {}),
+				...(this.sandbox.imageGeneration ? { generate_image: true } : {}),
 			} : undefined,
 			createVibeTools: config.createVibeTools,
 			createThinkTool: config.createThinkTool,

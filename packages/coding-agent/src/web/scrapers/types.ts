@@ -39,10 +39,12 @@ export type SpecialHandler = (
 /** Network read bound for a fetched body; the only size limit on rendered URL content. */
 export const MAX_BYTES = 50 * 1024 * 1024;
 
+export const BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
 const USER_AGENTS = [
 	"curl/8.0",
 	"Mozilla/5.0 (compatible; TextBot/1.0)",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	BROWSER_USER_AGENT,
 ];
 
 /**

@@ -82,7 +82,7 @@ try {
 			};
 			const env = { HOME: temp.path(), PASEO_HOME: temp.join("paseo"), PI_CODING_AGENT_DIR: agentDir, PI_CONFIG_DIR: ".omp", PI_PROFILE: "", OPENAI_API_KEY: "test-local-transport-only", SANDBOX_REQUEST_CAPTURE: captureFile, USER: "HOST_IDENTITY_SENTINEL", HOST_PRIVATE_VALUE: "HOST_ENV_SENTINEL", XDG_DATA_HOME: temp.join("data"), XDG_STATE_HOME: temp.join("state"), XDG_CACHE_HOME: temp.join("cache") };
 			const launch = (session?: string, sandbox = true) => new RpcClient({
-				command: () => ["node", "--input-type=module", "-e", `import * as fs from "node:fs";import { startNodeRpcHost, NODE_RPC_SANDBOX_VERSION } from ${JSON.stringify(pathToFileURL(entry).href)};if(![1,2].includes(NODE_RPC_SANDBOX_VERSION))throw Error("Sandbox support unavailable");globalThis.fetch=(url,options)=>(${sandboxModelTransport.toString()})(fs,url,options);await startNodeRpcHost(${JSON.stringify({ ...options, session, sandbox: sandbox ? options.sandbox : undefined })});`],
+				command: () => ["node", "--input-type=module", "-e", `import * as fs from "node:fs";import { startNodeRpcHost, NODE_RPC_SANDBOX_VERSION } from ${JSON.stringify(pathToFileURL(entry).href)};if(![1,2,3].includes(NODE_RPC_SANDBOX_VERSION))throw Error("Sandbox support unavailable");globalThis.fetch=(url,options)=>(${sandboxModelTransport.toString()})(fs,url,options);await startNodeRpcHost(${JSON.stringify({ ...options, session, sandbox: sandbox ? options.sandbox : undefined })});`],
 				cwd: root, env,
 			});
 			using client = launch();

@@ -1,5 +1,6 @@
 import { spyOn } from "bun:test";
 import { Resolver } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
 import type { RecordWithTtl, ResolveOptions, ResolveWithTtlOptions } from "node:dns";
 import * as http from "node:http";
 import type { RequestOptions } from "node:https";
@@ -27,7 +28,7 @@ export function sandboxDnsAnswer(answer: (hostname: string) => Promise<string[]>
 }
 
 /** Only the test socket seam maps an approved public address to loopback. */
-export async function sandboxHttpFixture(handler: http.RequestListener) {
+export async function sandboxHttpFixture(handler: http.RequestListener, routedAddresses?: LookupAddress[]) {
 	const requests: RecordedSandboxRequest[] = [];
 	const pins: Array<{ hostname: string; address: string; family: number }> = [];
 	const sockets = new Set<Socket>();
@@ -55,16 +56,19 @@ export async function sandboxHttpFixture(handler: http.RequestListener) {
 	const dns6 = spyOn(Resolver.prototype, "resolve6").mockImplementation(sandboxDnsAnswer(async hostname => dns[hostname]?.ipv6 ?? ["2606:4700:4700::1111"]));
 	const original = http.Agent.prototype.createConnection;
 	const connector = spyOn(http.Agent.prototype, "createConnection").mockImplementation(function (this: http.Agent, options, callback) {
-		if (!options.lookup || (options as SandboxFixtureRequestOptions).autoSelectFamily !== false) throw new Error("Sandbox socket did not provide a fixed-address lookup");
+		if (!options.lookup || (options as SandboxFixtureRequestOptions).autoSelectFamily !== true) throw new Error("Sandbox socket did not provide a fixed-address lookup");
 		const hostname = String(options.host);
 		let resolved = false;
-		options.lookup(hostname, { family: Number(options.family) }, (error, address, family) => {
-			if (error || typeof address !== "string" || (family !== 4 && family !== 6)) throw new Error("Sandbox lookup did not return one approved IP");
+		options.lookup(hostname, { all: true }, (error, addresses) => {
+			if (error || !Array.isArray(addresses) || !addresses.length) throw new Error("Sandbox lookup did not return approved addresses");
+			const { address, family } = addresses[0]!;
 			pins.push({ hostname, address, family });
 			resolved = true;
 		});
 		if (!resolved) throw new Error("Sandbox lookup was not pinned synchronously");
-		return original.call(this, { ...options, host: "127.0.0.1", hostname: "127.0.0.1", port, family: 4, lookup: undefined }, callback);
+		return original.call(this, { ...options, host: "127.0.0.1", hostname: "127.0.0.1", port, family: 4, lookup: undefined,
+			...(routedAddresses ? { host: hostname, hostname, family: undefined, lookup: (_hostname, _options, done) => done(null, routedAddresses) } : {}),
+		}, callback);
 	});
 	return {
 		requests, pins, sockets, dns, dns4, dns6,

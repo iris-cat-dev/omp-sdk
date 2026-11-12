@@ -322,6 +322,7 @@ import { createArchivePrelude } from "./archive/prelude-definition";
 import { ToolContextStore } from "./tools/context";
 import { isIrcEnabled } from "./irc/messaging";
 import { imageGenTool } from "./tools/image-gen";
+import { sandboxImageTool, type SandboxImageSettings, type SandboxImagePreferences } from "./sandbox-image";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isFilesystemSourcePath } from "./tools/path-utils";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
@@ -842,6 +843,8 @@ export interface CreateAgentSessionOptions {
 	sandbox?: AgentSandbox;
 	/** Trusted host-only provider registration, without extension/tool APIs. */
 	setupModelRegistry?: (registry: ModelRegistry) => Promise<void>;
+	/** Trusted native-image settings only; used exclusively with the imageGeneration grant. */
+	sandboxImageSettings?: SandboxImageSettings;
 
 	/** Output schema for structured completion (subagents). */
 	outputSchema?: unknown;
@@ -1805,11 +1808,21 @@ export function createAutoLearnCaptureRunner(
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	if ("sandboxPolicy" in options) throw new Error("Sandbox policy is private to the SDK");
 	if (options.sandbox) {
-		const sandboxPolicy = Object.freeze({ root: options.sandbox.root, javascript: options.sandbox.javascript, network: options.sandbox.network });
-		const files = await openSandboxFs(sandboxPolicy);
+		const sandboxPolicy = Object.freeze({ root: options.sandbox.root, javascript: options.sandbox.javascript, network: options.sandbox.network, imageGeneration: options.sandbox.imageGeneration });
+		if (sandboxPolicy.imageGeneration !== undefined && typeof sandboxPolicy.imageGeneration !== "boolean") throw new Error("Invalid sandbox image capability");
+		const files = await openSandboxFs({ ...sandboxPolicy, ...(sandboxPolicy.imageGeneration ? { maxBytes: 35 * 1024 * 1024 } : {}) });
+		let imagePreferences: SandboxImagePreferences | undefined;
+		let imageAuth: AuthStorage | undefined;
 		try {
 			const sourceSettings = await (options.settings ?? options.settingsManager ?? Settings.loadIsolated({ cwd: sandboxPolicy.root, agentDir: options.agentDir ?? getAgentDir(), globalOnly: true }));
 			const tools = sandboxTools(files, sandboxPolicy);
+			if (sandboxPolicy.imageGeneration) {
+				const agentDir = options.agentDir ?? getAgentDir();
+				imageAuth = await discoverAuthStorage(agentDir, { settings: sourceSettings, cwd: sandboxPolicy.root });
+				const imageRegistry = new ModelRegistry(imageAuth, path.join(agentDir, "models.yml"), { settings: sourceSettings });
+				imagePreferences = await options.sandboxImageSettings?.(imageRegistry);
+				tools.push(sandboxImageTool(files, imageRegistry, sourceSettings, imagePreferences));
+			}
 			// Sandbox factories use ToolDefinition's signal-first signature, not legacy CustomTool callbacks.
 			for (const tool of tools) Object.defineProperty(tool, "__isToolDefinition", { value: true });
 			const result = await createAgentSessionWithPolicy({ ...options, sandbox: undefined,
@@ -1830,8 +1843,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				prewalk: undefined, deferredPrewalk: undefined, suppressAutoPrewalk: true, planYolo: undefined, additionalDirectories: [], cacheWarming: false,
 			});
 			result.session.addDisposer(() => files.close());
+			result.session.addDisposer(() => { imagePreferences?.dispose(); imageAuth?.close(); });
 			return result;
-		} catch (error) { files.close(); throw error; }
+		} catch (error) { imagePreferences?.dispose(); imageAuth?.close(); files.close(); throw error; }
 	}
 	return createAgentSessionWithPolicy(options);
 }
@@ -2040,7 +2054,8 @@ async function createAgentSessionScoped(options: InternalCreateAgentSessionOptio
 			if (savedSandbox.type !== "custom" || !savedSandbox.data || typeof savedSandbox.data !== "object" || !("root" in savedSandbox.data) || savedSandbox.data.root !== options.sandboxPolicy.root) throw new Error("Saved sandbox root does not match");
 			const javascript = "javascript" in savedSandbox.data ? savedSandbox.data.javascript : undefined;
 			const network = "network" in savedSandbox.data ? savedSandbox.data.network : undefined;
-			if ((javascript === undefined ? false : javascript) !== (options.sandboxPolicy.javascript ?? false) || network !== options.sandboxPolicy.network) throw new Error("Saved sandbox capabilities do not match; create a new session to change permissions");
+			const imageGeneration = "imageGeneration" in savedSandbox.data ? savedSandbox.data.imageGeneration : undefined;
+			if ((javascript === undefined ? false : javascript) !== (options.sandboxPolicy.javascript ?? false) || network !== options.sandboxPolicy.network || (imageGeneration ?? false) !== (options.sandboxPolicy.imageGeneration ?? false)) throw new Error("Saved sandbox capabilities do not match; create a new session to change permissions");
 		} else {
 			if (sessionManager.getEntries().some(entry => entry.type === "message" || entry.type === "session_init")) throw new Error("Cannot resume an unrestricted transcript in a sandbox");
 			sessionManager.appendCustomEntry("sandbox-policy", options.sandboxPolicy);

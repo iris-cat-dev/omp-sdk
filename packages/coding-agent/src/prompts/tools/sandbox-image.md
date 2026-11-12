@@ -1,0 +1,1 @@
+Generate or edit an image using the host's configured image model. Input images must use sandbox-relative paths; generated images are saved in .qqbot-media/generated. Host paths and inline image data are unavailable. The host may disable image generation independently of this sandbox grant.

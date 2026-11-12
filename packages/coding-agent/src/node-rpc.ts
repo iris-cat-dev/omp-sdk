@@ -24,9 +24,10 @@ import { BUILTIN_TOOL_NAMES } from "./tools/builtin-names";
 import { cfgToolsApprovalMode } from "./tools/settings";
 import { ProxyPolicyController, type ProxyPolicy, setDefaultProxyPolicyController } from "@oh-my-pi/pi-ai/utils/proxy";
 import { randomUUID } from "node:crypto";
+import { openSandboxImageSettings } from "./sandbox-image-settings";
 
 export * from "./modes/rpc/rpc-mode";
-export const NODE_RPC_SANDBOX_VERSION = 2;
+export const NODE_RPC_SANDBOX_VERSION = 3;
 export { openSandboxFs, type SandboxFs } from "./sandbox-fs";
 
 initializeNodeSdk(import.meta.url);
@@ -49,6 +50,8 @@ export interface NodeRpcHostOptions {
 	sandbox?: AgentSandbox;
 	/** Trusted Desktop local-model provider adapter, never a model extension. */
 	modelBridgeExtension?: string;
+	/** Trusted Desktop native image settings adapter; no model extension APIs. */
+	imageSettingsAdapter?: string;
 }
 
 const supportedParsedOptions: Readonly<Record<string, true>> = {
@@ -171,6 +174,8 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 	const result = await createAgentSession({
 		proxyController,
 		sandbox: options.sandbox,
+		sandboxImageSettings: options.sandbox?.imageGeneration && options.imageSettingsAdapter
+			? registry => openSandboxImageSettings(options.imageSettingsAdapter!, registry) : undefined,
 		setupModelRegistry: options.sandbox && options.modelBridgeExtension ? async registry => {
 			if (!path.isAbsolute(options.modelBridgeExtension!)) throw new Error("Model bridge adapter must be absolute");
 			const module: unknown = createRequire(import.meta.url)(options.modelBridgeExtension!);

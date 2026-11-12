@@ -234,7 +234,8 @@ async function buildToolResult(
 	};
 }
 
-export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails> = {
+export function createImageGenTool<TDetails>(buildResult: (model: Model, result: ImageGenerationResult) => Promise<AgentToolResult<TDetails, ImageGenParams>>): CustomTool<typeof imageGenSchema, TDetails> {
+	return {
 	name: "generate_image",
 	label: "GenerateImage",
 	strict: false,
@@ -330,7 +331,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						carrier: resolvedCarrier,
 						sessionId,
 					});
-					return buildToolResult(model, result);
+					return buildResult(model, result);
 				} catch (error) {
 					if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) throw error;
 					failures.push(error);
@@ -345,7 +346,9 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 			);
 		});
 	},
-};
+	};
+}
+export const imageGenTool = createImageGenTool(buildToolResult);
 
 export async function getImageGenTools(
 	_modelRegistry?: ModelRegistry,

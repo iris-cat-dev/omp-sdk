@@ -1,4 +1,6 @@
 import { type as arkType } from "@oh-my-pi/omptype";
+import { htmlToMarkdown } from "@oh-my-pi/pi-natives";
+import type { LookupAddress } from "node:dns";
 import { Resolver } from "node:dns/promises";
 import * as http from "node:http";
 import * as https from "node:https";
@@ -8,8 +10,10 @@ import type { Duplex, Transform } from "node:stream";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import type { ToolDefinition } from "./extensibility/extensions/types";
 import sandboxFetchDescription from "./prompts/tools/sandbox-fetch.md" with { type: "text" };
+import { decodeBody } from "./web/response-body";
+import { BROWSER_USER_AGENT } from "./web/scrapers/types";
 
-type PinnedRequestOptions = https.RequestOptions & { autoSelectFamily: false };
+type PinnedRequestOptions = https.RequestOptions & { autoSelectFamily: true; autoSelectFamilyAttemptTimeout: number };
 
 export interface SandboxFetchRequest {
 	url: string;
@@ -26,6 +30,8 @@ export interface SandboxFetchResponse {
 }
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_READER_BYTES = 5 * 1024 * 1024;
+const MAX_READER_CHARS = 100_000;
 const MAX_URL_BYTES = 8 * 1024;
 const MAX_HEADER_BYTES = 32 * 1024;
 const DEADLINE_MS = 30_000;
@@ -187,26 +193,25 @@ async function cancellable<T>(promise: Promise<T>, signal: AbortSignal): Promise
 	finally { signal.removeEventListener("abort", abort); }
 }
 
-async function resolveDestination(url: URL, resolver: Resolver, signal: AbortSignal): Promise<{ hostname: string; address: string; family: 4 | 6 }> {
+async function resolveDestination(url: URL, resolver: Resolver, signal: AbortSignal): Promise<{ hostname: string; addresses: LookupAddress[] }> {
 	const hostname = hostnameOf(url);
-	if (isIP(hostname)) return { hostname, address: hostname, family: globalAddress(hostname) };
+	if (isIP(hostname)) return { hostname, addresses: [{ address: hostname, family: globalAddress(hostname) }] };
 	const results = await cancellable(Promise.allSettled([resolver.resolve4(hostname), resolver.resolve6(hostname)]), signal);
-	const addresses: string[] = [];
+	const addresses: LookupAddress[] = [];
 	for (const result of results) {
-		if (result.status === "fulfilled") addresses.push(...result.value);
-		else if (!["ENODATA", "ENOTFOUND"].includes(result.reason?.code)) throw new SandboxFetchError("Sandbox HTTP DNS resolution failed", { cause: result.reason });
+		if (result.status === "fulfilled") {
+			// Validate the entire answer before allowing any connection, including secondary records.
+			for (const address of result.value) addresses.push({ address, family: globalAddress(address) });
+		} else if (!["ENODATA", "ENOTFOUND"].includes(result.reason?.code)) throw new SandboxFetchError("Sandbox HTTP DNS resolution failed", { cause: result.reason });
 	}
 	if (!addresses.length) fail("DNS resolution found no destination addresses");
-	// Reject the whole DNS answer when any record is non-global; do not silently select around it.
-	const address = addresses[0]!;
-	const family = globalAddress(address);
-	for (let index = 1; index < addresses.length; index++) globalAddress(addresses[index]!);
-	return { hostname, address, family };
+	return { hostname, addresses };
 }
 
-async function responseBody(response: http.IncomingMessage, signal: AbortSignal): Promise<string> {
+async function responseBody(response: http.IncomingMessage, signal: AbortSignal, maxBytes: number): Promise<string> {
+	const limit = `${maxBytes / (1024 * 1024)} MiB`;
 	const contentLength = response.headers["content-length"];
-	if (contentLength && Number(contentLength) > MAX_BODY_BYTES) fail("response body exceeds 1 MiB");
+	if (contentLength && Number(contentLength) > maxBytes) fail(`response body exceeds ${limit}`);
 	const encoding = response.headers["content-encoding"]?.trim().toLowerCase();
 	let decoder: Transform | undefined;
 	if (encoding && encoding !== "identity") {
@@ -225,18 +230,18 @@ async function responseBody(response: http.IncomingMessage, signal: AbortSignal)
 	};
 	const boundWire = (chunk: Buffer) => {
 		wireBytes += chunk.length;
-		if (wireBytes > MAX_BODY_BYTES) rejectTransport(new SandboxFetchError("Sandbox HTTP response body exceeds 1 MiB"));
+		if (wireBytes > maxBytes) rejectTransport(new SandboxFetchError(`Sandbox HTTP response body exceeds ${limit}`));
 	};
 	const collect = (chunk: Buffer) => {
 		decodedBytes += chunk.length;
-		if (decodedBytes > MAX_BODY_BYTES) rejectTransport(new SandboxFetchError("Sandbox HTTP decoded response body exceeds 1 MiB"));
+		if (decodedBytes > maxBytes) rejectTransport(new SandboxFetchError(`Sandbox HTTP decoded response body exceeds ${limit}`));
 		else chunks.push(chunk);
 	};
 	const ended = () => {
 		if (!response.complete) { rejectTransport(new Error("HTTP response ended before message completion")); return; }
 		try {
-			const body = Buffer.concat(chunks, decodedBytes).toString("utf8");
-			if (Buffer.byteLength(body) > MAX_BODY_BYTES) fail("UTF-8 response text exceeds 1 MiB");
+			const body = decodeBody(Buffer.concat(chunks, decodedBytes), response.headers["content-type"] ?? "");
+			if (Buffer.byteLength(body) > maxBytes) fail(`UTF-8 response text exceeds ${limit}`);
 			pending.resolve(body);
 		} catch (error) { pending.reject(error); }
 	};
@@ -282,13 +287,17 @@ async function responseBody(response: http.IncomingMessage, signal: AbortSignal)
 	}
 }
 
-async function requestHop(input: ParsedRequest, resolver: Resolver, signal: AbortSignal): Promise<{ response: SandboxFetchResponse; location?: string }> {
-	const { hostname, address, family } = await resolveDestination(input.url, resolver, signal);
+async function requestHop(input: ParsedRequest, resolver: Resolver, signal: AbortSignal, maxBytes: number): Promise<{ response: SandboxFetchResponse; location?: string }> {
+	const { hostname, addresses } = await resolveDestination(input.url, resolver, signal);
 	if (signal.aborted) throw abortError(signal);
 	const secure = input.url.protocol === "https:";
 	// Never use global agents, fetch wrappers, proxy settings, a Cookie jar, or client credentials.
 	const agent = secure ? new https.Agent({ keepAlive: false, maxSockets: 1, rejectUnauthorized: true }) : new http.Agent({ keepAlive: false, maxSockets: 1 });
-	const lookup: LookupFunction = (_hostname, _options, callback) => callback(null, address, family);
+	// Node races only this validated snapshot; no second DNS lookup and no replay of HTTP data.
+	const lookup: LookupFunction = (_hostname, options, callback) => {
+		if (options.all) callback(null, addresses);
+		else callback(null, addresses[0]!.address, addresses[0]!.family);
+	};
 	let request: http.ClientRequest | undefined;
 	let incoming: http.IncomingMessage | undefined;
 	try {
@@ -297,8 +306,8 @@ async function requestHop(input: ParsedRequest, resolver: Resolver, signal: Abor
 			const options: PinnedRequestOptions = {
 				protocol: input.url.protocol, hostname, port: input.url.port || undefined,
 				path: input.url.pathname + input.url.search, method: input.method,
-				headers: { "accept-encoding": "identity", ...input.headers, ...(input.body === undefined ? {} : { "content-length": String(input.body.length) }) }, agent, lookup, family,
-				autoSelectFamily: false, signal, maxHeaderSize: MAX_HEADER_BYTES,
+				headers: { "user-agent": BROWSER_USER_AGENT, accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "accept-encoding": "identity", ...input.headers, ...(input.body === undefined ? {} : { "content-length": String(input.body.length) }) }, agent, lookup,
+				autoSelectFamily: true, autoSelectFamilyAttemptTimeout: 250, signal, maxHeaderSize: MAX_HEADER_BYTES,
 				rejectUnauthorized: true, servername: secure && !isIP(hostname) ? hostname : undefined,
 			};
 			request = secure ? https.request(options, pending.resolve) : http.request(options, pending.resolve);
@@ -324,7 +333,7 @@ async function requestHop(input: ParsedRequest, resolver: Resolver, signal: Abor
 		const location = REDIRECT_STATUSES.has(status) ? incoming.headers.location : undefined;
 		// HEAD and no-content statuses carry representation metadata, not a response body.
 		const bodyless = input.method === "HEAD" || status < 200 || status === 204 || status === 205 || status === 304;
-		const body = location === undefined && !bodyless ? await responseBody(incoming, signal) : "";
+		const body = location === undefined && !bodyless ? await responseBody(incoming, signal, maxBytes) : "";
 		return { response: { url: input.url.href, status, headers, body }, location };
 	} finally {
 		incoming?.destroy();
@@ -335,6 +344,10 @@ async function requestHop(input: ParsedRequest, resolver: Resolver, signal: Abor
 
 /** Submit explicit data to a public HTTP(S) destination; no ambient host network credentials. */
 export async function sandboxFetch(input: unknown, signal?: AbortSignal): Promise<SandboxFetchResponse> {
+	return fetchPublicRequest(input, signal, MAX_BODY_BYTES, false);
+}
+
+async function fetchPublicRequest(input: unknown, signal: AbortSignal | undefined, maxBytes: number, reader: boolean): Promise<SandboxFetchResponse & { format?: "markdown" | "text"; truncated?: boolean }> {
 	const controller = new AbortController();
 	const cancel = () => controller.abort(new SandboxFetchError("Sandbox HTTP request cancelled"));
 	const timer = setTimeout(() => controller.abort(new SandboxFetchError("Sandbox HTTP 30 second deadline exceeded")), DEADLINE_MS);
@@ -347,8 +360,20 @@ export async function sandboxFetch(input: unknown, signal?: AbortSignal): Promis
 		if (controller.signal.aborted) throw abortError(controller.signal);
 		let request = parseRequest(input);
 		for (let redirects = 0; ; redirects++) {
-			const { response, location } = await requestHop(request, resolver, controller.signal);
-			if (location === undefined) return response;
+			const { response, location } = await requestHop(request, resolver, controller.signal, maxBytes);
+			if (location === undefined) {
+				if (!reader) return response;
+				const html = /^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(response.headers["content-type"] ?? "");
+				let body = response.body;
+				if (html && body) {
+					try { body = await cancellable(htmlToMarkdown(body, { cleanContent: true, hiddenContent: "reachable", skipImages: true }), controller.signal); }
+					catch (cause) {
+						if (controller.signal.aborted) throw abortError(controller.signal);
+						throw new SandboxFetchError("Sandbox HTTP HTML conversion failed; use raw: true to inspect the source", { cause });
+					}
+				}
+				return { ...response, body: body.slice(0, MAX_READER_CHARS), format: html ? "markdown" : "text", truncated: body.length > MAX_READER_CHARS };
+			}
 			if (redirects >= MAX_REDIRECTS) fail("redirect limit of 5 exceeded");
 			const url = checkedUrl(location, request.url);
 			const headers = url.origin === request.url.origin ? { ...request.headers } : Object.create(null) as Record<string, string>;
@@ -378,10 +403,15 @@ export function sandboxFetchTool(): ToolDefinition {
 		name: "sandbox_fetch",
 		label: "Fetch public HTTP URL",
 		description: sandboxFetchDescription,
-		parameters: arkType({ url: "string", "method?": "string", "headers?": { "[string]": "string" }, "body?": "string" }),
+		parameters: arkType({ url: "string", "method?": "string", "headers?": { "[string]": "string" }, "body?": "string", "raw?": "boolean" }),
 		execute: async (_id, input, signal) => {
 			try {
-				const response = await sandboxFetch(input, signal);
+				const data = fields(input);
+				const raw: unknown = data.raw?.value;
+				if (raw !== undefined && typeof raw !== "boolean") fail("raw must be a boolean");
+				const request: Record<string, unknown> = Object.create(null);
+				for (const [name, descriptor] of Object.entries(data)) if (name !== "raw") request[name] = descriptor.value;
+				const response = await fetchPublicRequest(request, signal, raw ? MAX_BODY_BYTES : MAX_READER_BYTES, !raw);
 				return { content: [{ type: "text", text: JSON.stringify(response) }], details: response };
 			} catch (error) {
 				if (error instanceof SandboxFetchError) return { content: [{ type: "text", text: error.message }], details: {}, isError: true };

@@ -8,6 +8,7 @@ export interface AgentSandbox {
 	root: string;
 	javascript?: boolean;
 	network?: "public";
+	imageGeneration?: boolean;
 }
 export interface SandboxFileStat { isDirectory: boolean; size: number; modifiedAt: number }
 export interface SandboxFileEntry extends SandboxFileStat { name: string }
