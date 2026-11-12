@@ -610,6 +610,8 @@ export interface SessionStats {
 	/** Failed edits by the engine's `errorKind`. */
 	editRejections?: Record<string, number>;
 	contextUsage?: ContextUsage;
+	/** Persisted compactions on the current branch, including compacted-away history. */
+	compactionCount?: number;
 }
 
 /** Stored OAuth accounts available to the current model provider. */

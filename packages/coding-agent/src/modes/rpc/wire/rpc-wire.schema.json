@@ -3574,6 +3574,11 @@
 				},
 				"contextUsage": {
 					"$ref": "#/$defs/ContextUsage"
+				},
+				"compactionCount": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Persisted compactions on the current session branch."
 				}
 			},
 			"required": [

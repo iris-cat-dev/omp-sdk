@@ -3495,6 +3495,9 @@ pub struct SessionStats {
 	pub edit_rejections: Option<BTreeMap<String, f64>>,
 	#[serde(rename = "contextUsage", default, skip_serializing_if = "Option::is_none")]
 	pub context_usage: Option<ContextUsage>,
+	/// Persisted compactions on the current session branch.
+	#[serde(rename = "compactionCount", default, skip_serializing_if = "Option::is_none")]
+	pub compaction_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

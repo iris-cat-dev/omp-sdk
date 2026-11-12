@@ -744,6 +744,8 @@ export interface SessionStats {
 	/** Failed edits by the engine's `errorKind`. */
 	editRejections?: Record<string, number>;
 	contextUsage?: ContextUsage;
+	/** Persisted compactions on the current session branch. */
+	compactionCount?: number;
 }
 
 export interface MessagesPage {

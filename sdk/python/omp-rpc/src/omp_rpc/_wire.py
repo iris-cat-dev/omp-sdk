@@ -930,6 +930,8 @@ class SessionStats:
     edit_rejections: dict[str, float] | None = None
     """Failed edits by the engine's `errorKind`."""
     context_usage: ContextUsage | None = None
+    compaction_count: int | None = None
+    """Persisted compactions on the current session branch."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2429,6 +2431,7 @@ def parse_session_stats(value: object, path: str = "SessionStats") -> SessionSta
         routed_models=optional(payload, "routedModels", record(decode_float), path),
         edit_rejections=optional(payload, "editRejections", record(decode_float), path),
         context_usage=optional(payload, "contextUsage", parse_context_usage, path),
+        compaction_count=optional(payload, "compactionCount", decode_int, path),
     )
 
 

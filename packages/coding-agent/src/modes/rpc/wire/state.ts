@@ -307,6 +307,7 @@ export const stateDefs = {
 		"routedModels?": "Record<string, number>",
 		"editRejections?": doc("Record<string, number>", "Failed edits by the engine's `errorKind`."),
 		"contextUsage?": "ContextUsage",
+		"compactionCount?": doc("number.integer >= 0", "Persisted compactions on the current session branch."),
 	},
 	MessagesPage: {
 		messages: "AgentMessage[]",

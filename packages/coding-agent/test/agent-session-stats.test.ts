@@ -96,6 +96,43 @@ describe("AgentSession session stats", () => {
 		expect(stats.assistantMessages).toBe(0);
 	});
 
+	it("counts persisted compactions across resume and only on the selected branch", async () => {
+		using tempDir = TempDir.createSync("@omp-compaction-count-");
+		const target = model();
+		const manager = SessionManager.create(tempDir.path(), tempDir.path());
+		await manager.ensureOnDisk();
+		const root = manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+		session = createStatsSession(manager, target);
+		expect(session.getSessionStats().compactionCount).toBe(0);
+		manager.appendCompaction("first summary", undefined, root, 100);
+		const kept = manager.appendMessage({ role: "user", content: "kept", timestamp: 2 });
+		manager.appendCompaction("second summary", undefined, kept, 200);
+		expect(session.getSessionStats().compactionCount).toBe(2);
+		await manager.flush();
+		const file = manager.getSessionFile();
+		if (!file) throw new Error("Expected persisted session file");
+		await session.dispose();
+		session = undefined;
+		await manager.close();
+
+		const resumed = await SessionManager.open(file, undefined, undefined, {
+			initialCwd: tempDir.path(),
+			suppressBreadcrumb: true,
+		});
+		session = createStatsSession(resumed, target);
+		try {
+			expect(session.getSessionStats().compactionCount).toBe(2);
+			resumed.branch(kept);
+			expect(session.getSessionStats().compactionCount).toBe(1);
+			resumed.branch(root);
+			expect(session.getSessionStats().compactionCount).toBe(0);
+		} finally {
+			await session.dispose();
+			session = undefined;
+			await resumed.close();
+		}
+	});
+
 	it("keeps mixed peak and off-peak charges in session and footer totals after resume", async () => {
 		const target = modelRegistry.find("deepseek", "deepseek-v4-flash");
 		if (!target) throw new Error("Expected bundled DeepSeek Flash");

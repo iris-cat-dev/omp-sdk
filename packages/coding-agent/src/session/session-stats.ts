@@ -245,7 +245,12 @@ export class SessionStatsTracker {
 				}
 			}
 		}
-		forEachActiveModelUsage(this.#host.sessionManager.getBranchView(), addUsage);
+		const branch = this.#host.sessionManager.getBranchView();
+		let compactionCount = 0;
+		for (const entry of branch) {
+			if (entry.type === "compaction") compactionCount++;
+		}
+		forEachActiveModelUsage(branch, addUsage);
 		return {
 			sessionFile: this.#host.sessionManager.getSessionFile(),
 			sessionId: this.#host.sessionId(),
@@ -276,6 +281,7 @@ export class SessionStatsTracker {
 			...(Object.keys(routedModels).length > 0 ? { routedModels } : undefined),
 			...(Object.keys(editRejections).length > 0 ? { editRejections } : undefined),
 			contextUsage: this.getContextUsage(),
+			compactionCount,
 		};
 	}
 

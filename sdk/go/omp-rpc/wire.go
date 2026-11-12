@@ -3434,6 +3434,8 @@ type SessionStats struct {
 	// Failed edits by the engine's `errorKind`.
 	EditRejections map[string]float64 `json:"editRejections,omitempty"`
 	ContextUsage   *ContextUsage      `json:"contextUsage,omitempty"`
+	// Persisted compactions on the current session branch.
+	CompactionCount *int64 `json:"compactionCount,omitempty"`
 }
 
 func (v *SessionStats) UnmarshalJSON(data []byte) error {
@@ -3457,6 +3459,7 @@ func (v *SessionStats) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("routedModels", &out.RoutedModels)
 	d.optional("editRejections", &out.EditRejections)
 	d.optional("contextUsage", &out.ContextUsage)
+	d.optional("compactionCount", &out.CompactionCount)
 	if d.err != nil {
 		return d.err
 	}
