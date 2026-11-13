@@ -85,6 +85,7 @@ import { RpcGoalController } from "./rpc-goal";
 import { RpcDictationBridge, type RpcDictationControllerFactory } from "./rpc-dictation";
 import { RpcLiveBridge, type RpcLiveSessionFactory } from "./rpc-live";
 import { RpcOutputWriter } from "./rpc-output";
+import { handleRpcOutputFailure } from "./rpc-output-failure";
 import {
 	RpcExtensionUserMessageTracker,
 	RpcPromptResults,
@@ -1423,7 +1424,7 @@ export interface RpcModeOptions {
 	createDictationController?: RpcDictationControllerFactory;
 	/** The session's MCP manager, so `/mcp` builtins resolve and reconnect live servers. */
 	mcpManager?: MCPManager;
-	onCustomFrame?: (frame:unknown)=>boolean;
+	onCustomFrame?: (frame: unknown) => boolean;
 }
 
 /**
@@ -1455,9 +1456,18 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// The writer can fail before the bridge is constructed.
 	let dictationBridge: RpcDictationBridge | undefined = undefined;
 	const outputWriter = new RpcOutputWriter(stdout, failure => {
-		logger.error("RPC output delivery failed", { error: String(failure) });
-		dictationBridge?.dispose();
-		void session.dispose().finally(() => process.exit(1));
+		void handleRpcOutputFailure(failure, {
+			stderr: process.platform === "win32" ? fs.createWriteStream("", { fd: 2, autoClose: false }) : process.stderr,
+			log: diagnostic => logger.error(diagnostic),
+			dispose: async () => {
+				try {
+					dictationBridge?.dispose();
+				} finally {
+					await session.dispose();
+				}
+			},
+			exit: code => process.exit(code),
+		});
 	});
 	outputWriter.write(
 		frameEncoder.encodeFrames({
@@ -1777,7 +1787,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// Hold ordinary commands in arrival order until the initialized command loop exists.
 	let heldFrames: unknown[] | undefined = [];
 	const receiveFrame = (parsed: unknown): void => {
-		if(options.onCustomFrame?.(parsed))return;
+		if (options.onCustomFrame?.(parsed)) return;
 		if (!heldFrames) {
 			inputDispatcher.dispatch(parsed);
 		} else if (isRpcExtensionUIResponse(parsed)) {
@@ -1919,17 +1929,37 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	};
 
 	const SANDBOX_RPC_COMMANDS: Partial<Record<RpcCommand["type"], true>> = {
-		negotiate_protocol: true, prompt: true, steer: true, follow_up: true,
-		abort: true, abort_and_prompt: true, abort_and_restore_queue: true,
-		get_state: true, get_messages: true, get_messages_page: true, get_entries: true, get_session_stats: true,
-		get_prompt_context: true, get_available_models: true, get_available_commands: true,
-		set_model: true, set_thinking_level: true, set_approval_mode: true,
-		set_auto_compaction: true, compact: true, append_session_annotation: true,
-		set_subagent_subscription: true, get_subagents: true, get_login_providers: true,
-		set_proxy_policy: true, new_session: true,
-		set_event_filter: true, get_runtime_resources: true, release_runtime_resource: true,
+		negotiate_protocol: true,
+		prompt: true,
+		steer: true,
+		follow_up: true,
+		abort: true,
+		abort_and_prompt: true,
+		abort_and_restore_queue: true,
+		get_state: true,
+		get_messages: true,
+		get_messages_page: true,
+		get_entries: true,
+		get_session_stats: true,
+		get_prompt_context: true,
+		get_available_models: true,
+		get_available_commands: true,
+		set_model: true,
+		set_thinking_level: true,
+		set_approval_mode: true,
+		set_auto_compaction: true,
+		compact: true,
+		append_session_annotation: true,
+		set_subagent_subscription: true,
+		get_subagents: true,
+		get_login_providers: true,
+		set_proxy_policy: true,
+		new_session: true,
+		set_event_filter: true,
+		get_runtime_resources: true,
+		release_runtime_resource: true,
 	};
-	const getAvailableCommands = async () => session.sandbox ? [] : buildAvailableSlashCommands(session);
+	const getAvailableCommands = async () => (session.sandbox ? [] : buildAvailableSlashCommands(session));
 	const reloadPluginState = async () => {
 		const cwd = session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
@@ -2084,7 +2114,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// Handle a single command
 	const handleCommandImpl = async (command: RpcCommand): Promise<RpcResponse> => {
 		const id = command.id;
-		if (session.sandbox && !Object.hasOwn(SANDBOX_RPC_COMMANDS, command.type)) return error(id, command.type, "Sandbox runtime operation denied");
+		if (session.sandbox && !Object.hasOwn(SANDBOX_RPC_COMMANDS, command.type))
+			return error(id, command.type, "Sandbox runtime operation denied");
 
 		switch (command.type) {
 			case "negotiate_protocol": {
@@ -2472,9 +2503,20 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "append_session_annotation": {
 				if (typeof command.customType !== "string" || command.customType.length === 0 || !("data" in command)) {
-					return error(id, "append_session_annotation", "Session annotation requires customType and JSON data", "invalid_annotation");
+					return error(
+						id,
+						"append_session_annotation",
+						"Session annotation requires customType and JSON data",
+						"invalid_annotation",
+					);
 				}
-				if (command.customType === "sandbox-policy") return error(id, "append_session_annotation", "Sandbox policy annotations are SDK-owned", "invalid_annotation");
+				if (command.customType === "sandbox-policy")
+					return error(
+						id,
+						"append_session_annotation",
+						"Sandbox policy annotations are SDK-owned",
+						"invalid_annotation",
+					);
 				const entryId = session.sessionManager.appendCustomEntry(command.customType, command.data);
 				await session.sessionManager.ensureOnDisk();
 				await session.sessionManager.flush();
