@@ -117,6 +117,19 @@ models use its `/api/alpha` sibling on the same host, e.g. a `.../api/v1` relay 
 `preferWebsockets` (on a model or `modelOverrides` entry) controls whether Codex requests prefer
 the WebSocket transport. `omitMaxOutputTokens` omits the model-derived output cap.
 
+`serviceTiers` is an optional list on `models` and `modelOverrides`, for example
+`serviceTiers: [priority, ultrafast]`. For custom OpenAI Responses and Chat
+Completions models, an explicit list controls Ultrafast availability; `[]` or a
+list without `ultrafast` disables it. Without a list, an HTTPS endpoint whose
+origin is exactly `https://api.openai.com` permits the UF request field even
+under a custom provider ID. Other custom endpoints need an explicit declaration.
+Codex-backend models continue to require an advertised `ultrafast` tier.
+Capability declarations do not verify project/account access or trigger billed
+probes. Eligible custom API turns record an explicit served-tier echo, including
+`default` when downgraded, without assuming that an omitted echo confirms UF or
+applying OpenAI billing multipliers to a custom provider.
+
+
 ### Bedrock request options
 
 Provider-level `guardrailIdentifier`, `guardrailVersion`, and `guardrailTrace` attach a guardrail to
