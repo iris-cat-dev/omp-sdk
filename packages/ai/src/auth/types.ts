@@ -480,7 +480,12 @@ export interface ModelUsageHealthOptions {
 export type AuthApiKeyOptions = {
 	baseUrl?: string;
 	modelId?: string;
-	/** {@link oauthAccountKey}s of accounts known to serve `modelId` from multi-account discovery; OAuth selection prefers them and tries other accounts only as a last resort. */
+	/**
+	 * {@link oauthAccountKey}s known to serve `modelId` from discovery. Prefer
+	 * them for automatic routing, but never displace an otherwise usable
+	 * explicit pin or retry blocked accounts before unblocked alternatives
+	 * solely because discovery omits an account.
+	 */
 	accountIds?: readonly string[];
 	/**
 	 * Caller's cancel signal. Threaded into any broker-bound OAuth refresh so
@@ -1179,8 +1184,9 @@ export interface SessionsApi {
 	 *
 	 * The durable credential id keeps the pin stable across credential refreshes,
 	 * storage reordering, and process restarts. By default this is an explicit
-	 * user pin: ranking and account reserve never evict it; hard unavailability
-	 * and auth retry may still route around it.
+	 * user pin: ranking, account reserve and discovered model membership never
+	 * evict it; plan eligibility, hard unavailability and auth retry may still
+	 * route around it.
 	 *
 	 * `options.restoredAtMs` instead restores an automatic affinity recorded by a
 	 * persisted session, backdated to its last use, so it keeps the provider's

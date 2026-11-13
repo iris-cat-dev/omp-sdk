@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Fixed manual account selection and automatic rotation returning to an exhausted Codex account when model discovery still listed only older accounts ([#142](https://github.com/iris-cat-dev/omp/issues/142)).
 - Fixed multipart uploads and multi-reference OpenAI image edits failing in Node and embedded desktop SDK hosts. ([#1](https://github.com/iris-cat-dev/omp-sdk/pull/1), thanks [@Charlie-chulong](https://github.com/Charlie-chulong))
 - Fixed Node SDK sessions exiting when an HTTPS proxy closes during TLS negotiation.
 - Fixed SDK sessions failing to start with `database is locked` when another session is writing the shared credentials database.

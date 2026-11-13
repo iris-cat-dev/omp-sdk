@@ -39,6 +39,7 @@
 
 ### Fixed
 
+- Fixed existing and new Codex sessions ignoring newly added accounts while the model catalog cache was still fresh ([#142](https://github.com/iris-cat-dev/omp/issues/142)).
 - Improved `sandbox_fetch` with readable Markdown, bounded large-page previews, browser request headers, charset decoding and alternate validated-address connections; `raw: true` and guest JavaScript preserve complete source responses.
 - Fixed recursive sandbox JavaScript failing QuickJS cleanup under Desktop's Node runtime. A conservative 128 KiB guest stack guard returns a guest `RangeError` and preserves recovery on the next tool call.
 - Fixed invalid or over-limit image inputs blocking every later conversation turn: rejected image history is removed durably while text and tool results remain, including when reopening a previously stuck session.

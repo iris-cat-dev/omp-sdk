@@ -54,6 +54,11 @@ export interface ModelManagerOptions<TApi extends Api = Api, TModelsDevPayload =
 	cacheDbPath?: string;
 	/** Optional provider id override for cache namespacing. Defaults to providerId. */
 	cacheProviderId?: string;
+	/**
+	 * Non-secret discovery-input fingerprint (for example the OAuth account pool).
+	 * A changed scope invalidates freshness, not the cached offline fallback.
+	 */
+	cacheScope?: string;
 	/** Maximum cache age in milliseconds before considered stale. Default: 2h (`DEFAULT_CACHE_TTL_MS`). */
 	cacheTtlMs?: number;
 	/** When true, a successful dynamic fetch is the complete provider catalog and prunes static-only models. */
@@ -290,10 +295,12 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 	const staticCatalogFingerprint = fingerprintStaticModels(staticModels, dynamicModelsAuthoritative);
 	// Endpoint-migration policy is cache identity: adding an id must invalidate
 	// matching-static-catalog caches written by the prior resolver.
-	const staticFingerprint =
+	const policyFingerprint =
 		cacheDropIds && cacheDropIds.length > 0
 			? `${staticCatalogFingerprint}:drop:${runtime.hash(cacheDropIds.join("\0")).toString(36)}`
 			: staticCatalogFingerprint;
+	const staticFingerprint =
+		options.cacheScope === undefined ? policyFingerprint : `${policyFingerprint}:scope:${options.cacheScope}`;
 	const cacheFingerprintMatches = cache?.staticFingerprint === staticFingerprint && staticFingerprint.length > 0;
 	const cacheNeedsModelMigration =
 		!cacheFingerprintMatches &&
@@ -303,6 +310,7 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 		(cache?.fresh ?? false) &&
 		!cacheHasUnresolvedHeaders &&
 		!cacheNeedsModelMigration &&
+		(options.cacheScope === undefined || cacheFingerprintMatches) &&
 		(!dynamicModelsAuthoritative || cacheFingerprintMatches);
 	const dynamicFetcher = options.fetchDynamicModels;
 	const hasDynamicFetcher = typeof dynamicFetcher === "function";

@@ -76,3 +76,48 @@ describe("alwaysRefetchDynamicModels", () => {
 		}
 	});
 });
+
+describe("cacheScope", () => {
+	it("refreshes changed discovery inputs while retaining the same row as an offline and failure fallback", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "model-cache-scope-"));
+		try {
+			let served = "syn:old-account";
+			let unavailable = false;
+			const fetchMock = vi.fn(async () => {
+				if (unavailable) throw new Error("synthetic discovery outage");
+				return Response.json(payload(served));
+			});
+			const options = {
+				...syntheticModelManagerOptions({ apiKey: "scope-test-key", fetch: fetchMock }),
+				cacheDbPath: path.join(tempDir, "models.db"),
+			};
+			const original = createModelManager({ ...options, cacheScope: "account-a" });
+			await original.refresh("online");
+			const initialCalls = fetchMock.mock.calls.length;
+			await original.refresh("online-if-uncached");
+			expect(fetchMock.mock.calls.length).toBe(initialCalls);
+
+			const changed = createModelManager({ ...options, cacheScope: "accounts-a-b" });
+			const offline = await changed.refresh("offline");
+			expect(offline.models.some(model => model.id === "syn:old-account")).toBe(true);
+			expect(offline.stale).toBe(true);
+			expect(fetchMock.mock.calls.length).toBe(initialCalls);
+
+			served = "syn:new-account";
+			const fresh = await changed.refresh("online-if-uncached");
+			expect(fresh.models.some(model => model.id === "syn:new-account")).toBe(true);
+			expect(fresh.models.some(model => model.id === "syn:old-account")).toBe(false);
+			const refreshedCalls = fetchMock.mock.calls.length;
+			expect(refreshedCalls).toBeGreaterThan(initialCalls);
+			await changed.refresh("online-if-uncached");
+			expect(fetchMock.mock.calls.length).toBe(refreshedCalls);
+
+			unavailable = true;
+			const failed = await createModelManager({ ...options, cacheScope: "account-b" }).refresh("online-if-uncached");
+			expect(failed.models.some(model => model.id === "syn:new-account")).toBe(true);
+			expect(failed.stale).toBe(true);
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+});

@@ -109,6 +109,7 @@ import {
 	unservedOverrideKind,
 } from "./model-patch";
 import {
+	ACCOUNT_SCOPED_DISCOVERY_PROVIDER_IDS,
 	BUILT_IN_DISCOVERY_CACHE_TTL_MS,
 	BUILT_IN_DISCOVERY_NON_AUTHORITATIVE_RETRY_MS,
 	type BuiltInDiscoveryResult,
@@ -379,6 +380,9 @@ export class ModelRegistry {
 	/** Waiter armed before the initial background refresh starts (CLI kicks it off after the session is built, #10048). */
 	#initialRefreshWaiters = new Set<() => void>();
 	#credentialScopedCacheHydration?: Promise<void>;
+	#accountDiscoveryScopes = new Map<string, string>();
+	#accountCatalogRefreshes = new Map<string, Promise<void>>();
+	#accountPoolScopes = new Map<string, { generation: number; scope: string }>();
 	#configuredDiscoveryInFlight: Map<
 		DiscoveryProviderConfig,
 		Map<ModelRefreshStrategy, Promise<ConfiguredModelDiscoveryResult>>
@@ -687,6 +691,7 @@ export class ModelRegistry {
 	 * Catch the catalog up for a view that just read it, rebuilding only when it
 	 * is actually stale: waits out an in-flight background refresh, then runs an
 	 * offline {@link refresh} if models.yml changed on disk since the last load.
+	 * Account-pool changes also refresh the affected account-scoped catalog.
 	 * Resolves `true` when either may have changed the catalog (the view should
 	 * re-read it), `false` without any rebuild when the in-memory catalog is
 	 * already current. Rejects when the offline rebuild fails.
@@ -701,6 +706,10 @@ export class ModelRegistry {
 			await this.refresh("offline");
 			changed = true;
 		}
+		const accountChanges = await Promise.all(
+			ACCOUNT_SCOPED_DISCOVERY_PROVIDER_IDS.map(provider => this.#ensureCurrentAccountCatalog(provider)),
+		);
+		changed ||= accountChanges.some(Boolean);
 		return changed;
 	}
 
@@ -1373,6 +1382,74 @@ export class ModelRegistry {
 		return resolveModelCacheProviderId(providerId, { baseUrl });
 	}
 
+	#accountDiscoveryScope(provider: string): string | undefined {
+		if (!ACCOUNT_SCOPED_DISCOVERY_PROVIDER_IDS.includes(provider)) return undefined;
+		if (this.#discoverableProviders.some(config => config.provider === provider)) return undefined;
+		const generation = this.authStorage.credentials.generation;
+		const cached = this.#accountPoolScopes.get(provider);
+		if (cached?.generation === generation) return cached.scope;
+		const accounts: Array<[number, string | undefined, string | undefined, string | undefined]> = [];
+		for (const row of this.authStorage.credentials.list(provider)) {
+			const credential = row.credential;
+			if (credential.type !== "oauth") continue;
+			accounts.push([row.id, oauthAccountKey(credential), credential.projectId, credential.orgId]);
+		}
+		accounts.sort((left, right) => left[0] - right[0]);
+		const scope = runtime.hash(JSON.stringify(accounts)).toString(36);
+		this.#accountPoolScopes.set(provider, { generation, scope });
+		return scope;
+	}
+
+	async #pollAuthCredentials(): Promise<void> {
+		try {
+			await this.authStorage.credentials.poll();
+		} catch (error) {
+			// A failed external-store poll must not take working offline auth down.
+			logger.debug("credential poll failed during model catalog refresh", { error: String(error) });
+		}
+	}
+
+	/**
+	 * Account-scoped catalogs describe the pool at discovery time, not a permanent
+	 * allowlist. Re-discover once when that pool changes, including peer-process
+	 * writes. The same cache row remains available if discovery is offline/fails.
+	 */
+	async #ensureCurrentAccountCatalog(provider: string): Promise<boolean> {
+		if (this.#isProviderDisabled(provider) || this.#accountDiscoveryScope(provider) === undefined) return false;
+		await this.#pollAuthCredentials();
+		const pending = this.#accountCatalogRefreshes.get(provider);
+		if (pending) {
+			await pending;
+			await this.#ensureCurrentAccountCatalog(provider);
+			return true;
+		}
+		const scope = this.#accountDiscoveryScope(provider);
+		if (scope === undefined || this.#accountDiscoveryScopes.get(provider) === scope) return false;
+		if (!this.#accountDiscoveryScopes.has(provider)) {
+			const cache = readModelCache<Api>(
+				this.#resolveStartupModelCacheProviderId(provider),
+				BUILT_IN_DISCOVERY_CACHE_TTL_MS,
+				Date.now,
+				this.#cacheDbPath,
+			);
+			if (!cache || cache.staticFingerprint.endsWith(`:scope:${scope}`)) {
+				this.#accountDiscoveryScopes.set(provider, scope);
+				return false;
+			}
+		}
+		this.#accountDiscoveryScopes.set(provider, scope);
+		this.#cachedAuthoritativeProviders.delete(provider);
+		this.#runtimeAuthoritativeProviders.delete(provider);
+		const refresh = this.#refreshRuntimeDiscoveries("online-if-uncached", new Set([provider]));
+		this.#accountCatalogRefreshes.set(provider, refresh);
+		try {
+			await refresh;
+		} finally {
+			if (this.#accountCatalogRefreshes.get(provider) === refresh) this.#accountCatalogRefreshes.delete(provider);
+		}
+		return true;
+	}
+
 	#loadCachedStandardProviderModels(providerIds: readonly string[]): {
 		modelsByProvider: Map<string, Model<Api>[]>;
 		authoritativeFreshProviders: Set<string>;
@@ -1405,7 +1482,10 @@ export class ModelRegistry {
 				}
 				continue;
 			}
-			if (cache.fresh && cache.authoritative) {
+			const accountScope = this.#accountDiscoveryScope(providerId);
+			const accountScopeMatches =
+				accountScope === undefined || cache.staticFingerprint.endsWith(`:scope:${accountScope}`);
+			if (cache.fresh && cache.authoritative && accountScopeMatches) {
 				authoritativeFreshProviders.add(providerId);
 			}
 			// The model cache never persists request headers (#5780): restore
@@ -1903,6 +1983,7 @@ export class ModelRegistry {
 		strategy: ModelRefreshStrategy,
 		providerFilter?: ReadonlySet<string>,
 	): Promise<void> {
+		await this.#pollAuthCredentials();
 		// One cache connection for the whole pass: every provider manager reads
 		// (and may write) its row, which would otherwise reopen the database each time.
 		using _cacheConnection = retainModelCacheConnection(this.#cacheDbPath);
@@ -2536,7 +2617,8 @@ export class ModelRegistry {
 			if (!isAuthenticated(key)) {
 				continue;
 			}
-			options.push(descriptor.createOptions(key, specialKeys[i]));
+			const managerOptions = descriptor.createOptions(key, specialKeys[i]);
+			options.push({ ...managerOptions, cacheScope: this.#accountDiscoveryScope(descriptor.providerId) });
 		}
 
 		// Catalog-only providers have no endpoint manager. Give their bundled
@@ -2581,6 +2663,9 @@ export class ModelRegistry {
 			const result = await withModelDiscoveryTimeout(RUNTIME_DYNAMIC_MODEL_FETCH_TIMEOUT_MS, () =>
 				manager.refresh(strategy),
 			);
+			if (options.cacheScope !== undefined && strategy !== "offline") {
+				this.#accountDiscoveryScopes.set(options.providerId, options.cacheScope);
+			}
 			const models = result.models.map(model =>
 				model.provider === options.providerId ? model : { ...model, provider: options.providerId },
 			);
@@ -3359,10 +3444,14 @@ export class ModelRegistry {
 		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
+		await this.#ensureCurrentAccountCatalog(model.provider);
+		// Sessions can retain a Model object from before the pool/catalog refresh.
+		const currentModel = this.find(model.provider, model.id);
+		const accountAccess = currentModel ? currentModel.accountAccess : model.accountAccess;
 		return this.authStorage.keys.get(model.provider, sessionId, {
 			baseUrl: model.baseUrl,
 			modelId: model.id,
-			accountIds: model.accountAccess && Object.keys(model.accountAccess),
+			accountIds: accountAccess && Object.keys(accountAccess),
 			signal: options?.signal,
 		});
 	}
@@ -3421,6 +3510,7 @@ export class ModelRegistry {
 		if (this.#isKeylessProvider(provider)) {
 			return { apiKey: kNoAuth };
 		}
+		if (options?.modelId) await this.#ensureCurrentAccountCatalog(provider);
 		const accountAccess = options?.modelId ? this.find(provider, options.modelId)?.accountAccess : undefined;
 		return this.authStorage.keys.getWithCredential(provider, sessionId, {
 			baseUrl: options?.baseUrl,

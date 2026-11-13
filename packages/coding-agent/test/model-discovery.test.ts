@@ -63,7 +63,7 @@ describe("ModelRegistry runtime discovery", () => {
 		// In-memory auth DB: tests need a fresh, isolated credential store per case but
 		// never reopen it from disk, so :memory: avoids the WAL/chmod disk-open cost
 		// (~3ms/test) while preserving per-test isolation.
-		authStorage = await AuthStorage.create(":memory:");
+		authStorage = await AuthStorage.create(":memory:", { usageProviderResolver: () => undefined });
 	});
 
 	afterEach(() => {
@@ -105,6 +105,35 @@ describe("ModelRegistry runtime discovery", () => {
 
 	function getModelsForProvider(registry: ModelRegistry, provider: string) {
 		return registry.getAll().filter(m => m.provider === provider);
+	}
+
+	function codexPoolCredential(accountId: string) {
+		return {
+			type: "oauth" as const,
+			access: `token-${accountId}`,
+			refresh: `refresh-${accountId}`,
+			expires: Date.now() + 3_600_000,
+			accountId,
+		};
+	}
+
+	function mockCodexPoolDiscovery(rosters: Record<string, string[]>, requests: string[]): FetchImpl {
+		return async (input, init) => {
+			if (!String(input).startsWith("https://chatgpt.com/backend-api") || !String(input).includes("/models")) {
+				throw new Error(`Unexpected URL: ${input}`);
+			}
+			const accountId = new Headers(init?.headers).get("chatgpt-account-id") ?? "";
+			requests.push(accountId);
+			return Response.json({
+				models: (rosters[accountId] ?? []).map(slug => ({
+					slug,
+					display_name: slug,
+					context_window: 128_000,
+					supported_in_api: true,
+					input_modalities: ["text"],
+				})),
+			});
+		};
 	}
 
 	function withEnv(
@@ -166,6 +195,7 @@ describe("ModelRegistry runtime discovery", () => {
 		authStorage.close();
 		const refreshCalls: string[] = [];
 		authStorage = await AuthStorage.create(":memory:", {
+			usageProviderResolver: () => undefined,
 			refreshOAuthCredential: async (provider, _credentialId, credential): Promise<OAuthCredentials> => {
 				refreshCalls.push(provider);
 				return {
@@ -652,6 +682,155 @@ describe("ModelRegistry runtime discovery", () => {
 		}
 	});
 
+	test("new Codex accounts refresh live routing even when requests retain the old Model object", async () => {
+		await authStorage.credentials.set("openai-codex", codexPoolCredential("a"));
+		const requests: string[] = [];
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: mockCodexPoolDiscovery(
+				{ a: ["pool-shared", "pool-a-only"], b: ["pool-shared"], c: ["pool-shared"] },
+				requests,
+			),
+		});
+		await registry.refreshProvider("openai-codex", "online");
+		const oldModel = registry.find("openai-codex", "pool-shared");
+		if (!oldModel) throw new Error("expected initial Codex model");
+		expect(oldModel.accountAccess).toEqual({ a: {} });
+		registry.getAll(); // Exercise an already materialized live catalog as well as provider lookups.
+
+		await authStorage.credentials.upsert("openai-codex", codexPoolCredential("b"));
+		await authStorage.credentials.upsert("openai-codex", codexPoolCredential("c"));
+		const accounts = authStorage.oauth.accounts("openai-codex");
+		const b = accounts.find(account => account.accountId === "b");
+		const c = accounts.find(account => account.accountId === "c");
+		if (!b || !c) throw new Error("expected newly imported accounts");
+		authStorage.sessions.pin("openai-codex", "pool-b", b.credentialId);
+		authStorage.sessions.pin("openai-codex", "pool-c", c.credentialId);
+		const [key, resolved] = await Promise.all([
+			registry.getApiKey(oldModel, "pool-b"),
+			registry.getApiKeyWithCredentialForProvider("openai-codex", "pool-c", { modelId: oldModel.id }),
+		]);
+		expect(key).toBe("token-b");
+		expect(resolved?.credentialId).toBe(c.credentialId);
+		expect(registry.find("openai-codex", oldModel.id)?.accountAccess).toEqual({ a: {}, b: {}, c: {} });
+		expect(registry.getAll().find(model => model.id === oldModel.id)?.accountAccess).toEqual({
+			a: {},
+			b: {},
+			c: {},
+		});
+		expect(registry.find("openai-codex", "pool-a-only")?.accountAccess).toEqual({ a: {} });
+		expect(requests).toEqual(["a", "a", "b", "c"]);
+
+		// Rotating a token is not a membership change and must not re-fetch every roster.
+		await authStorage.credentials.upsert("openai-codex", {
+			...codexPoolCredential("b"),
+			access: "token-b-rotated",
+		});
+		authStorage.sessions.pin("openai-codex", "pool-b", b.credentialId);
+		expect(await registry.getApiKey(oldModel, "pool-b")).toBe("token-b-rotated");
+		await registry.refreshProvider("openai-codex", "online-if-uncached");
+		expect(requests).toEqual(["a", "a", "b", "c"]);
+	});
+
+	test("a new registry keeps the offline Codex snapshot but refreshes its old account scope before a request", async () => {
+		await authStorage.credentials.set("openai-codex", codexPoolCredential("a"));
+		const requests: string[] = [];
+		const fetchMock = mockCodexPoolDiscovery({ a: ["pool-shared"], b: ["pool-shared"] }, requests);
+		const first = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await first.refreshProvider("openai-codex", "online");
+		await authStorage.credentials.upsert("openai-codex", codexPoolCredential("b"));
+
+		const reopened = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await reopened.refreshProvider("openai-codex", "offline");
+		const cachedModel = reopened.find("openai-codex", "pool-shared");
+		if (!cachedModel) throw new Error("expected offline cached-only model");
+		expect(cachedModel.accountAccess).toEqual({ a: {} });
+		expect(requests).toEqual(["a"]);
+		const b = authStorage.oauth.accounts("openai-codex").find(account => account.accountId === "b");
+		if (!b) throw new Error("expected imported account");
+		authStorage.sessions.pin("openai-codex", "new-session", b.credentialId);
+
+		const resolved = await reopened.getApiKeyWithCredentialForProvider("openai-codex", "new-session", {
+			modelId: cachedModel.id,
+		});
+		expect(resolved?.apiKey).toBe("token-b");
+		expect(resolved?.credentialId).toBe(b.credentialId);
+		expect(reopened.find("openai-codex", cachedModel.id)?.accountAccess).toEqual({ a: {}, b: {} });
+		expect(requests).toEqual(["a", "a", "b"]);
+	});
+
+	test("peer AuthStorage additions, disablements and removals replace live Codex account authority", async () => {
+		authStorage.close();
+		const authPath = path.join(tempDir, "peer-auth.db");
+		authStorage = await AuthStorage.create(authPath, { usageProviderResolver: () => undefined });
+		const writer = await AuthStorage.create(authPath, { usageProviderResolver: () => undefined });
+		try {
+			await writer.credentials.upsert("openai-codex", codexPoolCredential("a"));
+			await authStorage.credentials.reload();
+			const requests: string[] = [];
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				fetch: mockCodexPoolDiscovery(
+					{ a: ["pool-shared", "pool-a-only"], b: ["pool-shared"], c: ["pool-shared"] },
+					requests,
+				),
+			});
+			await registry.refreshProvider("openai-codex", "online");
+			const oldModel = registry.find("openai-codex", "pool-shared");
+			if (!oldModel) throw new Error("expected initial model");
+
+			await writer.credentials.upsert("openai-codex", codexPoolCredential("b"));
+			await registry.getApiKey(oldModel);
+			expect(registry.find("openai-codex", oldModel.id)?.accountAccess).toEqual({ a: {}, b: {} });
+			const a = writer.oauth.accounts("openai-codex").find(account => account.accountId === "a");
+			const b = writer.oauth.accounts("openai-codex").find(account => account.accountId === "b");
+			if (!a || !b) throw new Error("expected both persisted accounts");
+
+			expect(await writer.credentials.disable(a.credentialId, "synthetic test disable")).toBe(true);
+			expect(await registry.refreshIfStale()).toBe(true);
+			expect(registry.find("openai-codex", oldModel.id)?.accountAccess).toEqual({ b: {} });
+			expect(registry.find("openai-codex", "pool-a-only")).toBeUndefined();
+			expect(await registry.getApiKey(oldModel)).toBe("token-b");
+
+			expect(await writer.credentials.removeById("openai-codex", b.credentialId)).toBe(true);
+			await writer.credentials.upsert("openai-codex", codexPoolCredential("c"));
+			expect(await registry.getApiKey(oldModel)).toBe("token-c");
+			expect(registry.find("openai-codex", oldModel.id)?.accountAccess).toEqual({ c: {} });
+			expect(requests).toEqual(["a", "a", "b", "b", "c"]);
+		} finally {
+			writer.close();
+		}
+	});
+
+	test("failed account-pool discovery preserves known Codex model access without refetching on every request", async () => {
+		await authStorage.credentials.set("openai-codex", [codexPoolCredential("a"), codexPoolCredential("b")]);
+		const requests: string[] = [];
+		const online = mockCodexPoolDiscovery({ a: ["pool-a-only"], b: ["pool-b-only"] }, requests);
+		let unavailable = false;
+		let failedCalls = 0;
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async (input, init) => {
+				if (unavailable) {
+					failedCalls++;
+					throw new Error("synthetic discovery outage");
+				}
+				return online(input, init);
+			},
+		});
+		await registry.refreshProvider("openai-codex", "online");
+		const bOnly = registry.find("openai-codex", "pool-b-only");
+		if (!bOnly) throw new Error("expected account-gated model");
+		await authStorage.credentials.upsert("openai-codex", codexPoolCredential("c"));
+		unavailable = true;
+
+		expect(await registry.getApiKey(bOnly)).toBe("token-b");
+		expect(registry.find("openai-codex", bOnly.id)?.accountAccess).toEqual({ b: {} });
+		const failedAtRefresh = failedCalls;
+		expect(failedAtRefresh).toBeGreaterThanOrEqual(3);
+		expect(await registry.getApiKey(bOnly)).toBe("token-b");
+		await registry.refreshProvider("openai-codex", "offline");
+		expect(registry.find("openai-codex", bOnly.id)?.accountAccess).toEqual({ b: {} });
+		expect(failedCalls).toBe(failedAtRefresh);
+	});
+
 	test("Codex discovery aborts (keeps bundled models) when any account credential fails to refresh", async () => {
 		// Two configured Codex accounts: the fresh one resolves, the expired one's
 		// refresh throws so getOAuthAccesses reports ok:false. A partial union would
@@ -659,6 +838,7 @@ describe("ModelRegistry runtime discovery", () => {
 		// models, so discovery must abort and keep bundled models.
 		authStorage.close();
 		authStorage = await AuthStorage.create(":memory:", {
+			usageProviderResolver: () => undefined,
 			refreshOAuthCredential: async (_provider, _credentialId, credential): Promise<OAuthCredentials> => {
 				if (credential.access.includes("expired")) {
 					throw new Error("simulated transient refresh failure");
@@ -738,11 +918,13 @@ describe("ModelRegistry runtime discovery", () => {
 		// Bundled rows that no account serves stay pruned.
 		expect(registry.find("google-antigravity", "claude-sonnet-5-5")).toBeUndefined();
 
-		// A session pinned to account A moves to B for a model only B serves.
+		// Automatic session affinity yields to B for a model only B serves.
 		const sessionId = "antigravity-claude-session";
 		const accountA = authStorage.oauth.accounts("google-antigravity")[0];
 		if (!accountA || !opus) throw new Error("expected account A and Claude Opus 5.5");
-		expect(authStorage.sessions.pin("google-antigravity", sessionId, accountA.credentialId)).toBe(true);
+		expect(
+			authStorage.sessions.pin("google-antigravity", sessionId, accountA.credentialId, { restoredAtMs: Date.now() }),
+		).toBe(true);
 		expect(await registry.getApiKey(opus, sessionId)).toContain('"token":"token-b"');
 	});
 
@@ -790,7 +972,9 @@ describe("ModelRegistry runtime discovery", () => {
 		const sessionId = "antigravity-emailless-session";
 		const accountA = authStorage.oauth.accounts("google-antigravity")[0];
 		if (!accountA || !opus) throw new Error("expected account A and Claude Opus 5.5");
-		expect(authStorage.sessions.pin("google-antigravity", sessionId, accountA.credentialId)).toBe(true);
+		expect(
+			authStorage.sessions.pin("google-antigravity", sessionId, accountA.credentialId, { restoredAtMs: Date.now() }),
+		).toBe(true);
 		expect(await registry.getApiKey(opus, sessionId)).toContain('"token":"token-b"');
 	});
 

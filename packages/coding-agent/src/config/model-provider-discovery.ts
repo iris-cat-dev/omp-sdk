@@ -15,6 +15,9 @@ export const SPECIAL_MODEL_MANAGER_PROVIDER_IDS: readonly string[] = [
 	"openai-codex",
 ];
 
+/** Providers whose discovered model access is the union of the stored OAuth pool. */
+export const ACCOUNT_SCOPED_DISCOVERY_PROVIDER_IDS: readonly string[] = ["openai-codex", "google-antigravity"];
+
 const STARTUP_MODEL_CACHE_PROVIDER_IDS_RECORD: Record<string, true> = Object.create(null);
 for (const providerId of [
 	...PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId),

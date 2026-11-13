@@ -1125,6 +1125,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		const accountB = accounts.find(account => account.accountId === "acct-b");
 		if (!accountA || !accountB) throw new Error("expected both accounts");
 		const sessionId = "blocked-explicit-pin";
+		const options = { modelId: "gpt-daybreak-blue-latest", accountIds: ["acct-a"] };
 
 		await authStorage.limits.markReached("openai-codex", sessionId, {
 			credentialId: accountB.credentialId,
@@ -1132,14 +1133,14 @@ describe("AuthStorage codex oauth ranking", () => {
 		});
 		expect(authStorage.sessions.pin("openai-codex", sessionId, accountB.credentialId)).toBe(true);
 		// An unblocked sibling still wins over a blocked pin.
-		expect(await authStorage.keys.get("openai-codex", sessionId)).toBe("api-acct-a");
+		expect(await authStorage.keys.get("openai-codex", sessionId, options)).toBe("api-acct-a");
 
 		await authStorage.limits.markReached("openai-codex", sessionId, {
 			credentialId: accountA.credentialId,
 			retryAfterMs: HOUR_MS,
 		});
 		expect(authStorage.sessions.pin("openai-codex", sessionId, accountB.credentialId)).toBe(true);
-		expect(await authStorage.keys.get("openai-codex", sessionId)).toBe("api-acct-b");
+		expect(await authStorage.keys.get("openai-codex", sessionId, options)).toBe("api-acct-b");
 	});
 
 	test("retains the pinned row when the first preflight reload reorders later candidates", async () => {
@@ -2825,7 +2826,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		expect(apiKey).toBe("api-acct-soon");
 	});
 
-	test("prefers discovered model accounts over a pinned Codex account, without filtering unmatched catalogs", async () => {
+	test("prefers discovered model accounts over automatic Codex affinity, without filtering unmatched catalogs", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.credentials.set("openai-codex", [
@@ -2836,7 +2837,9 @@ describe("AuthStorage codex oauth ranking", () => {
 		if (!firstAccount) throw new Error("expected first Codex account");
 
 		const sessionId = "daybreak-account-eligible";
-		expect(authStorage.sessions.pin("openai-codex", sessionId, firstAccount.credentialId)).toBe(true);
+		expect(
+			authStorage.sessions.pin("openai-codex", sessionId, firstAccount.credentialId, { restoredAtMs: Date.now() }),
+		).toBe(true);
 		expect(await authStorage.keys.get("openai-codex", sessionId)).toBe("api-account-A");
 		expect(
 			await authStorage.keys.get("openai-codex", sessionId, {
@@ -2854,6 +2857,137 @@ describe("AuthStorage codex oauth ranking", () => {
 			}),
 		).toBe("api-account-A");
 	});
+
+	test("keeps a new explicit pin and its persisted binding when stale discovery lists only a spent account", async () => {
+		if (!authStorage || !store) throw new Error("test setup failed");
+		await authStorage.credentials.set("openai-codex", {
+			type: "oauth",
+			...createCredential("acct-old", "old@example.com"),
+		});
+		const sessionId = "stale-discovery-manual-pin";
+		expect(await authStorage.keys.get("openai-codex", sessionId)).toBe("api-acct-old");
+		await authStorage.credentials.upsert("openai-codex", {
+			type: "oauth",
+			...createCredential("acct-new", "new@example.com"),
+		});
+		// Spent plan allowance with credits remains usable, so the strict
+		// membership pass used to silently replace the user's new pin with it.
+		usageByAccount.set("acct-old", await fetchCodexPlanExhaustedReport("acct-old", CODEX_CREDIT_BALANCE));
+		usageByAccount.set(
+			"acct-new",
+			createCodexUsageReport({
+				accountId: "acct-new",
+				primary: { usedFraction: 0.2, resetInMs: HOUR_MS },
+				secondary: { usedFraction: 0.2, resetInMs: WEEK_MS },
+			}),
+		);
+		await authStorage.usage.invalidate("openai-codex");
+		const newAccount = authStorage.oauth.accounts("openai-codex").find(account => account.accountId === "acct-new");
+		if (!newAccount) throw new Error("expected newly added account");
+		expect(authStorage.sessions.pin("openai-codex", sessionId, newAccount.credentialId)).toBe(true);
+		const options = { modelId: "gpt-daybreak-blue-latest", accountIds: ["acct-old"] };
+
+		expect(await authStorage.keys.get("openai-codex", sessionId, options)).toBe("api-acct-new");
+		expect(authStorage.oauth.accounts("openai-codex", sessionId).find(account => account.active)?.credentialId).toBe(
+			newAccount.credentialId,
+		);
+		const restored = new AuthStorage(store, {
+			usageProviderResolver: provider => (provider === "openai-codex" ? usageProvider : undefined),
+		});
+		await restored.credentials.reload();
+		expect(restored.oauth.accounts("openai-codex", sessionId).find(account => account.active)?.credentialId).toBe(
+			newAccount.credentialId,
+		);
+		// Resolving again after restoring the persisted affinity must preserve
+		// explicitness too, not just display the correct account before routing.
+		expect(await restored.keys.get("openai-codex", sessionId, options)).toBe("api-acct-new");
+	});
+
+	test.each(["existing", "new"] as const)(
+		"routes an %s session to an unlisted unblocked account before the exhausted discovered account",
+		async sessionKind => {
+			if (!authStorage || !store) throw new Error("test setup failed");
+			await authStorage.credentials.set("openai-codex", {
+				type: "oauth",
+				...createCredential("acct-old", "old@example.com"),
+			});
+			const sessionId = `stale-discovery-${sessionKind}-session`;
+			if (sessionKind === "existing") {
+				expect(await authStorage.keys.get("openai-codex", sessionId)).toBe("api-acct-old");
+			}
+			await authStorage.credentials.upsert("openai-codex", {
+				type: "oauth",
+				...createCredential("acct-new", "new@example.com"),
+			});
+			usageByAccount.set("acct-old", await fetchCodexPlanExhaustedReport("acct-old", CODEX_NO_BALANCE));
+			usageByAccount.set(
+				"acct-new",
+				createCodexUsageReport({
+					accountId: "acct-new",
+					primary: { usedFraction: 0.2, resetInMs: HOUR_MS },
+					secondary: { usedFraction: 0.2, resetInMs: WEEK_MS },
+				}),
+			);
+			await authStorage.usage.invalidate("openai-codex");
+
+			expect(
+				await authStorage.keys.get("openai-codex", sessionId, {
+					modelId: "gpt-daybreak-blue-latest",
+					accountIds: ["acct-old"],
+				}),
+			).toBe("api-acct-new");
+			const newAccount = authStorage.oauth.accounts("openai-codex", sessionId).find(account => account.active);
+			expect(newAccount?.accountId).toBe("acct-new");
+			const restored = new AuthStorage(store);
+			await restored.credentials.reload();
+			expect(restored.oauth.accounts("openai-codex", sessionId).find(account => account.active)?.credentialId).toBe(
+				newAccount?.credentialId,
+			);
+		},
+	);
+
+	test.each(["removed", "refresh-rejected"] as const)(
+		"does not resurrect a %s explicit pin omitted by discovery",
+		async failure => {
+			if (!authStorage || !store) throw new Error("test setup failed");
+			await authStorage.credentials.set("openai-codex", [
+				{ type: "oauth", ...createCredential("acct-old", "old@example.com") },
+				{
+					type: "oauth",
+					...createCredential("acct-new", "new@example.com"),
+					expires: failure === "refresh-rejected" ? 0 : Date.now() + HOUR_MS,
+				},
+			]);
+			const newAccount = authStorage.oauth
+				.accounts("openai-codex")
+				.find(account => account.accountId === "acct-new");
+			if (!newAccount) throw new Error("expected newly added account");
+			const sessionId = `stale-discovery-${failure}-pin`;
+			expect(authStorage.sessions.pin("openai-codex", sessionId, newAccount.credentialId)).toBe(true);
+			if (failure === "removed") {
+				expect(await authStorage.credentials.removeById("openai-codex", newAccount.credentialId)).toBe(true);
+			} else {
+				vi.spyOn(oauthUtils, "refreshOAuthToken").mockRejectedValue(new Error("invalid_grant"));
+			}
+
+			expect(
+				await authStorage.keys.get("openai-codex", sessionId, {
+					modelId: "gpt-daybreak-blue-latest",
+					accountIds: ["acct-old"],
+				}),
+			).toBe("api-acct-old");
+			expect(
+				authStorage.oauth
+					.accounts("openai-codex")
+					.some(account => account.credentialId === newAccount.credentialId),
+			).toBe(false);
+			const restored = new AuthStorage(store);
+			await restored.credentials.reload();
+			expect(restored.oauth.accounts("openai-codex", sessionId).find(account => account.active)?.accountId).toBe(
+				"acct-old",
+			);
+		},
+	);
 
 	test.each([
 		["gpt-5.6-sol", "free", "plus"],
@@ -3100,8 +3234,14 @@ describe("AuthStorage codex oauth ranking", () => {
 			}),
 		);
 
+		const freeAccount = authStorage.oauth.accounts("openai-codex").find(account => account.accountId === "acct-free");
+		if (!freeAccount) throw new Error("expected free account");
+		expect(authStorage.sessions.pin("openai-codex", "session-paid-gated-all-blocked", freeAccount.credentialId)).toBe(
+			true,
+		);
 		const apiKey = await authStorage.keys.get("openai-codex", "session-paid-gated-all-blocked", {
 			modelId: "gpt-5.6-sol",
+			accountIds: ["acct-paid"],
 		});
 		expect(apiKey).toBe("api-acct-paid");
 	});

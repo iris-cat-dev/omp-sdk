@@ -562,7 +562,9 @@ export class CredentialSelector {
 	 *
 	 * Resolution ladder — a request in hand always beats "no API key":
 	 * 1. strict: unblocked credentials only, usage limits respected, plan
-	 *    filter enforced (when any account is confirmed eligible);
+	 *    filter enforced (when any account is confirmed eligible). Prefer
+	 *    discovered model accounts, except for an explicit session pin; if
+	 *    none resolves, try other unblocked accounts before blocked ones;
 	 * 2. plan-fitting last resort: same plan filter, but blocked/exhausted
 	 *    accounts are allowed (an explicit session pin first, then blocked
 	 *    candidates earliest-unblocking first) so the caller gets real
@@ -967,10 +969,11 @@ export class CredentialSelector {
 			allowBlocked: boolean;
 			enforcePlanRequirement: boolean;
 			enforceAccounts: boolean;
-		}> = [
-			{ allowBlocked: false, enforcePlanRequirement, enforceAccounts },
-			{ allowBlocked: true, enforcePlanRequirement, enforceAccounts },
-		];
+		}> = [{ allowBlocked: false, enforcePlanRequirement, enforceAccounts }];
+		// Discovery membership can lag a newly added account. Keep known access
+		// preferred, but exhaust usable accounts before retrying a blocked one.
+		if (enforceAccounts) passes.push({ allowBlocked: false, enforcePlanRequirement, enforceAccounts: false });
+		passes.push({ allowBlocked: true, enforcePlanRequirement, enforceAccounts });
 		if (enforcePlanRequirement) passes.push({ allowBlocked: true, enforcePlanRequirement: false, enforceAccounts });
 		if (enforceAccounts) passes.push({ allowBlocked: true, enforcePlanRequirement: false, enforceAccounts: false });
 		// Blocked candidates rank earliest-unblock first, which would route a
@@ -984,8 +987,15 @@ export class CredentialSelector {
 			for (const candidate of pass.allowBlocked ? lastResortCandidates : candidates) {
 				if (preflightFailures.has(candidate)) continue;
 				const candidateAccountKey = oauthAccountKey(candidate.selection.credential);
-				if (pass.enforceAccounts && (candidateAccountKey === undefined || !accountIds?.has(candidateAccountKey)))
+				// A manual pin is stronger than advisory discovery membership, not
+				// plan eligibility, usage blocks, session restrictions or auth health.
+				if (
+					pass.enforceAccounts &&
+					candidate !== explicitPin &&
+					(candidateAccountKey === undefined || !accountIds?.has(candidateAccountKey))
+				) {
 					continue;
+				}
 				const resolved = await this.tryOAuth(provider, candidate.selection, providerKey, sessionId, options, {
 					checkUsage,
 					allowBlocked: pass.allowBlocked,
