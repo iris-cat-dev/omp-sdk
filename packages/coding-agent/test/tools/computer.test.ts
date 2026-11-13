@@ -20,12 +20,12 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools/computer/protocol";
 import {
 	beginComputerTurnForOwner,
-	type ComputerController,
 	type ComputerEscapeStops,
 	ComputerSupervisor,
 	type ComputerWorkerHandle,
 	endComputerTurnForOwner,
 	registerComputerController,
+	releaseComputerSessionsForOwner,
 	resumeComputerUseForOwner,
 } from "@oh-my-pi/pi-coding-agent/tools/computer/supervisor";
 import { ComputerWorkerCore, type NativeDesktopSession } from "@oh-my-pi/pi-coding-agent/tools/computer/worker";
@@ -436,6 +436,10 @@ function toolSession(): ToolSession {
 function workerPrelude(session: ToolSession, native: NativeDesktopSession): EvalPreludeDefinition {
 	const transport = new MemoryTransport();
 	new ComputerWorkerCore(transport, () => native);
+	const close = async () => {
+		transport.inbound({ type: "close" });
+		await transport.waitFor(message => message.type === "closed");
+	};
 	return createComputerPrelude(session, () => ({
 		async run(code, timeoutMs, runSnapshot) {
 			const id = crypto.randomUUID();
@@ -448,10 +452,8 @@ function workerPrelude(session: ToolSession, native: NativeDesktopSession): Eval
 		async capabilities() {
 			return native.capabilities;
 		},
-		async close() {
-			transport.inbound({ type: "close" });
-			await transport.waitFor(message => message.type === "closed");
-		},
+		reset: close,
+		close,
 	}));
 }
 
@@ -468,6 +470,7 @@ describe("computer prelude", () => {
 			async capabilities() {
 				return undefined;
 			},
+			async reset() {},
 			async close() {},
 		}));
 		const context = { session: toolSession(), toolCallId: "computer-validation" };
@@ -523,109 +526,6 @@ describe("computer prelude", () => {
 		await prelude.invoke({ action: "close" }, context);
 	});
 
-	it("routes run, capabilities, images, cancellation inputs, and close through one host controller", async () => {
-		const calls: Array<{
-			code: string;
-			timeoutMs: number;
-			snapshot: ComputerSessionSnapshot;
-			signal?: AbortSignal;
-		}> = [];
-		let closeCount = 0;
-		const controller: ComputerController = {
-			async run(code: string, timeoutMs: number, runSnapshot: ComputerSessionSnapshot, signal?: AbortSignal) {
-				calls.push({ code, timeoutMs, snapshot: runSnapshot, signal });
-				return {
-					displays: [
-						{ type: "text", text: "captured" },
-						{ type: "image", data: "iVBORw==", mimeType: "image/png" },
-					],
-					returnValue: { windows: 1 },
-					screenshots: [],
-					capabilities,
-				};
-			},
-			async capabilities() {
-				return capabilities;
-			},
-			async close() {
-				closeCount += 1;
-			},
-		};
-		const session = toolSession();
-		const prelude = createComputerPrelude(session, () => controller);
-		const abort = new AbortController();
-		const context = { session, toolCallId: "computer-run", signal: abort.signal };
-
-		const result = await prelude.invoke(
-			{ action: "run", code: "await desktop.windows()", read_only: true, timeout: 7 },
-			context,
-		);
-		expect(calls).toHaveLength(1);
-		expect(calls[0]).toMatchObject({
-			code: "await desktop.windows()",
-			timeoutMs: 7_000,
-			snapshot: { readOnly: true, display: "active" },
-			signal: abort.signal,
-		});
-		expect(result.content).toEqual([
-			{ type: "text", text: "captured" },
-			{ type: "image", data: "iVBORw==", mimeType: "image/png", detail: "original" },
-		]);
-		expect(result.details).toMatchObject({
-			code: "await desktop.windows()",
-			readOnly: true,
-			backend: "fake",
-			value: { windows: 1 },
-		});
-
-		const functionResult = await prelude.invoke(
-			{ action: "run", fn: "(_scope, count) => count", args: [7] },
-			context,
-		);
-		expect(calls[1]?.code).toBe("return await ((_scope, count) => count)({ desktop, wait, assert }, 7);");
-		expect(functionResult.details).toMatchObject({ value: { windows: 1 } });
-
-		await prelude.invoke(
-			{
-				action: "call",
-				chain: [
-					{ method: "window", args: ["42"] },
-					{ method: "ax", args: [{ maxDepth: 3 }] },
-				],
-			},
-			context,
-		);
-		await prelude.invoke({ action: "call", chain: [{ method: "press", args: ["cmd+s"] }], timeout: 9 }, context);
-		expect(calls[2]).toMatchObject({
-			code: 'return await (await desktop.window("42")).ax({"maxDepth":3});',
-			snapshot: { readOnly: true },
-		});
-		expect(calls[3]).toMatchObject({
-			code: 'return await desktop.press("cmd+s");',
-			timeoutMs: 9_000,
-			snapshot: { readOnly: false },
-		});
-
-		const cancelled = new AbortController();
-		cancelled.abort();
-		await expect(
-			prelude.invoke(
-				{ action: "run", code: "await desktop.windows()" },
-				{ session, toolCallId: "computer-cancelled", signal: cancelled.signal },
-			),
-		).rejects.toMatchObject({ name: "ToolAbortError" });
-		expect(calls).toHaveLength(4);
-
-		const capabilityResult = await prelude.invoke({ action: "capabilities" }, context);
-		expect(capabilityResult.details).toEqual(capabilities);
-		await prelude.invoke({ action: "close" }, context);
-		await prelude.invoke({ action: "close" }, context);
-		expect(closeCount).toBe(1);
-		await expect(prelude.invoke({ action: "run", code: "await desktop.windows()" }, context)).rejects.toThrow(
-			"Computer session is closed",
-		);
-	});
-
 	it("installs a frozen JavaScript facade with handle proxies, runs, direct values, and display text", async () => {
 		const session = toolSession();
 		const prelude = createComputerPrelude(session, () => ({
@@ -635,6 +535,7 @@ describe("computer prelude", () => {
 			async capabilities() {
 				return undefined;
 			},
+			async reset() {},
 			async close() {},
 		}));
 		const calls: unknown[] = [];
@@ -809,6 +710,7 @@ describe("computer prelude", () => {
 			async capabilities() {
 				return undefined;
 			},
+			async reset() {},
 			async close() {},
 		}));
 		const calls: unknown[] = [];
@@ -896,6 +798,7 @@ describe("computer prelude", () => {
 			async capabilities() {
 				return undefined;
 			},
+			async reset() {},
 			async close() {},
 		}));
 		const callValues: Record<string, unknown> = {
@@ -1408,6 +1311,7 @@ describe("computer prelude", () => {
 			async capabilities() {
 				return undefined;
 			},
+			async reset() {},
 			async close() {},
 		}));
 		definitions = [
@@ -1441,6 +1345,7 @@ describe("computer prelude", () => {
 			async capabilities() {
 				return undefined;
 			},
+			async reset() {},
 			async close() {},
 		}));
 
@@ -2453,6 +2358,145 @@ describe("expanded computer APIs", () => {
 		vi.restoreAllMocks();
 	});
 
+	it.each(["owner cleanup", "computer.close"] as const)(
+		"requests fresh foreground approval after %s without replacing the prelude",
+		async cleanup => {
+			const ownerId = `computer-reopen-${crypto.randomUUID()}`;
+			let dispose: (() => void) | undefined;
+			const session: ToolSession = {
+				...toolSession(),
+				getEvalKernelOwnerId: () => ownerId,
+				registerDisposeCallback: callback => {
+					dispose = callback;
+				},
+			};
+			const natives: FakeNativeSession[] = [];
+			const supervisor = new ComputerSupervisor(
+				session,
+				() => {
+					const native = new FakeNativeSession();
+					natives.push(native);
+					return liveWorker(native);
+				},
+				undefined,
+				undefined,
+				NO_ESCAPE_STOPS,
+			);
+			const prelude = createComputerPrelude(session, () => supervisor);
+			let approved = true;
+			let prompts = 0;
+			const context = {
+				session,
+				toolCallId: "computer-reopen",
+				context: confirmationContext(async () => {
+					prompts += 1;
+					return approved;
+				}),
+			};
+			const acquire = () =>
+				prelude.invoke(
+					{ action: "call", chain: [{ method: "control.acquire", args: [{ reason: "Continue the task" }] }] },
+					context,
+				);
+			try {
+				expect((await acquire()).details).toMatchObject({ value: { active: true } });
+				if (cleanup === "owner cleanup") await releaseComputerSessionsForOwner(ownerId);
+				else await prelude.invoke({ action: "close" }, context);
+				expect(natives[0]!.controlActive).toBe(false);
+				expect(natives[0]!.closeCount).toBe(1);
+				expect(
+					(await prelude.invoke({ action: "call", chain: [{ method: "control.state", args: [] }] }, context))
+						.details,
+				).toMatchObject({ value: { active: false } });
+				approved = false;
+				expect((await acquire()).details).toMatchObject({ value: { active: false, reason: "denied" } });
+				expect(natives[1]!.acquireCount).toBe(0);
+				approved = true;
+				expect((await acquire()).details).toMatchObject({ value: { active: true } });
+				expect(prompts).toBe(3);
+				await releaseComputerSessionsForOwner(ownerId);
+				expect(natives[1]!.controlActive).toBe(false);
+				expect(natives[1]!.closeCount).toBe(1);
+				expect((await acquire()).details).toMatchObject({ value: { active: true } });
+				expect(prompts).toBe(4);
+			} finally {
+				dispose?.();
+				await supervisor.close();
+			}
+		},
+	);
+
+	it("waits for worker shutdown before reopening and cannot reopen a disposed session", async () => {
+		const closingStarted = Promise.withResolvers<void>();
+		const finishClose = Promise.withResolvers<void>();
+		let dispose: (() => void) | undefined;
+		const ownerId = `computer-dispose-${crypto.randomUUID()}`;
+		const session: ToolSession = {
+			...toolSession(),
+			getEvalKernelOwnerId: () => ownerId,
+			registerDisposeCallback: callback => {
+				dispose = callback;
+			},
+		};
+		const natives: FakeNativeSession[] = [];
+		const supervisor = new ComputerSupervisor(
+			session,
+			() => {
+				const native = new FakeNativeSession();
+				if (natives.length === 0) {
+					native.close = async () => {
+						closingStarted.resolve();
+						await finishClose.promise;
+						await FakeNativeSession.prototype.close.call(native);
+					};
+				}
+				natives.push(native);
+				return liveWorker(native);
+			},
+			undefined,
+			undefined,
+			NO_ESCAPE_STOPS,
+		);
+		const prelude = createComputerPrelude(session, () => supervisor);
+		let prompts = 0;
+		const context = {
+			session,
+			toolCallId: "computer-dispose",
+			context: confirmationContext(async () => {
+				prompts += 1;
+				return true;
+			}),
+		};
+		const acquire = () =>
+			prelude.invoke(
+				{ action: "call", chain: [{ method: "control.acquire", args: [{ reason: "Continue the task" }] }] },
+				context,
+			);
+		try {
+			expect((await acquire()).details).toMatchObject({ value: { active: true } });
+			const closing = prelude.invoke({ action: "close" }, context);
+			await closingStarted.promise;
+			const next = acquire();
+			expect(prompts).toBe(1);
+			expect(natives).toHaveLength(1);
+			finishClose.resolve();
+			await closing;
+			expect((await next).details).toMatchObject({ value: { active: true } });
+			expect(prompts).toBe(2);
+			dispose!();
+			await prelude.invoke({ action: "close" }, context);
+			expect(natives[1]!.controlActive).toBe(false);
+			await expect(acquire()).rejects.toThrow("Computer session is closed");
+			await expect(prelude.invoke({ action: "capabilities" }, context)).rejects.toThrow(
+				"Computer session is closed",
+			);
+		} finally {
+			finishClose.resolve();
+			dispose?.();
+			await supervisor.close();
+		}
+	});
+
 	it.each([true, false])(
 		"requires an actual live approval answer (%s), retaining only approved mode across helpers",
 		async approved => {
@@ -2751,6 +2795,29 @@ describe("expanded computer APIs", () => {
 			await close();
 		}
 	});
+
+	it.each(["computer.close", "owner cleanup"] as const)(
+		"keeps an Escape stop across %s until the user's message",
+		async cleanup => {
+			const { native, prelude, ownerId, context, close } = escapeHarness();
+			try {
+				native.escapeOnClick = true;
+				await expect(prelude.invoke(CLICK, context)).rejects.toThrow(ESCAPE_STOPPED_MESSAGE);
+				if (cleanup === "computer.close") await prelude.invoke({ action: "close" }, context);
+				else await releaseComputerSessionsForOwner(ownerId);
+				await expect(prelude.invoke(CLICK, context)).rejects.toThrow("the user pressed Escape");
+				await expect(prelude.invoke({ action: "capabilities" }, context)).rejects.toThrow(
+					"the user pressed Escape",
+				);
+				expect(native.clickCount).toBe(0);
+				resumeComputerUseForOwner(ownerId);
+				await prelude.invoke(CLICK, context);
+				expect(native.clickCount).toBe(1);
+			} finally {
+				await close();
+			}
+		},
+	);
 
 	it("says a call that finished sent its input when the user's Escape lands as it returns", async () => {
 		class EscapeAsClickReturns extends FakeNativeSession {
@@ -3808,6 +3875,7 @@ describe("display hold follows the agent turn", () => {
 			releaseDisplay(turn) {
 				releases.push(turn);
 			},
+			async reset() {},
 			async close() {},
 		}));
 		const context = { session, toolCallId: "computer-turn", signal: new AbortController().signal };

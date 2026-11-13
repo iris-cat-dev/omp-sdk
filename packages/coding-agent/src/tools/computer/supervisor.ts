@@ -70,6 +70,8 @@ export interface ComputerController {
 	/** The user's message acknowledges every Escape stop so far, lifting the refusal they set. */
 	resumeAfterEscape?(): void;
 	capabilities(snapshot: ComputerSessionSnapshot, signal?: AbortSignal): Promise<DesktopCapabilities | undefined>;
+	/** Release the worker and its grant while preserving the session's Escape stop/acknowledgement. */
+	reset(): Promise<void>;
 	close(): Promise<void>;
 }
 
@@ -213,6 +215,7 @@ export class ComputerSupervisor implements ComputerController {
 	/** A worker was started, so its sessions may have counted stops under the key. */
 	#started = false;
 	#closed = false;
+	#resetPromise?: Promise<void>;
 	#unsubscribeMessage?: () => void;
 	#unsubscribeError?: () => void;
 
@@ -245,6 +248,7 @@ export class ComputerSupervisor implements ComputerController {
 		snapshot: ComputerSessionSnapshot,
 		signal?: AbortSignal,
 	): Promise<DesktopCapabilities | undefined> {
+		if (this.#resetPromise) await this.#resetPromise;
 		if (this.#closed) throw new ToolError("Computer session is closed");
 		if (this.#escapeStopped()) throw new ToolError(ESCAPE_REFUSED_MESSAGE);
 		if (signal?.aborted) throw new ToolAbortError();
@@ -280,6 +284,7 @@ export class ComputerSupervisor implements ComputerController {
 		signal?: AbortSignal,
 		context?: AgentToolContext,
 	): Promise<ComputerRunOk> {
+		if (this.#resetPromise) await this.#resetPromise;
 		if (this.#closed) throw new ToolError("Computer session is closed");
 		if (this.#escapeStopped()) throw new ToolError(ESCAPE_REFUSED_MESSAGE);
 		if (signal?.aborted) throw new ToolAbortError();
@@ -584,9 +589,24 @@ export class ComputerSupervisor implements ComputerController {
 		});
 	}
 
+	reset(): Promise<void> {
+		if (this.#resetPromise) return this.#resetPromise;
+		this.#controlEpoch += 1;
+		// A failed shutdown stays latched: the old worker may still own native input.
+		const pending = this.#closeWorker().then(() => {
+			if (this.#resetPromise === pending) this.#resetPromise = undefined;
+		});
+		this.#resetPromise = pending;
+		return pending;
+	}
+
 	async close(): Promise<void> {
-		if (this.#closed) return;
+		if (this.#closed) {
+			await this.#resetPromise;
+			return;
+		}
 		this.#closed = true;
+		await this.reset();
 		if (this.#started) {
 			try {
 				this.#escapeStops.forget(this.#escapeKey);
@@ -594,6 +614,9 @@ export class ComputerSupervisor implements ComputerController {
 				// An addon without the Escape exports kept no count to drop; the worker must still close.
 			}
 		}
+	}
+
+	async #closeWorker(): Promise<void> {
 		const worker = this.#worker;
 		if (!worker) return;
 		const closed = Promise.withResolvers<void>();
@@ -612,27 +635,39 @@ export class ComputerSupervisor implements ComputerController {
 	}
 }
 
-const ownedSupervisors = new Map<string, Set<ComputerController>>();
+const ownedSupervisors = new Map<string, Map<ComputerController, () => Promise<void>>>();
 /** Per owner with agent turns: the turn in flight, or between turns the one that ended last, counted from 1. */
 const ownerTurns = new Map<string, { turn: number; inFlight: boolean }>();
 
-/** Registers a controller for owner-scoped session cleanup. */
-export function registerComputerController(ownerId: string | undefined, controller: ComputerController): () => void {
+/** Registers a controller and its resource release for owner-scoped session cleanup. */
+export function registerComputerController(
+	ownerId: string | undefined,
+	controller: ComputerController,
+	release?: () => Promise<void>,
+): () => void {
 	if (!ownerId) return () => {};
-	const controllers = ownedSupervisors.get(ownerId) ?? new Set<ComputerController>();
-	controllers.add(controller);
+	const controllers = ownedSupervisors.get(ownerId) ?? new Map<ComputerController, () => Promise<void>>();
 	ownedSupervisors.set(ownerId, controllers);
-	return () => {
+	const unregister = () => {
 		controllers.delete(controller);
-		if (controllers.size === 0) ownedSupervisors.delete(ownerId);
+		if (controllers.size === 0 && ownedSupervisors.get(ownerId) === controllers) ownedSupervisors.delete(ownerId);
 	};
+	controllers.set(
+		controller,
+		release ??
+			(async () => {
+				unregister();
+				await controller.close();
+			}),
+	);
+	return unregister;
 }
 
 /** Revoke task-scoped foreground ownership without resetting frames or the worker. */
 export async function revokeComputerControlForOwner(ownerId: string | undefined): Promise<void> {
 	if (!ownerId) return;
 	await Promise.allSettled(
-		Array.from(ownedSupervisors.get(ownerId) ?? [], controller => controller.revokeControl?.()),
+		Array.from(ownedSupervisors.get(ownerId)?.keys() ?? [], controller => controller.revokeControl?.()),
 	);
 }
 
@@ -655,7 +690,7 @@ export function endComputerTurnForOwner(ownerId: string | undefined): void {
 	const state = ownerId ? ownerTurns.get(ownerId) : undefined;
 	if (!ownerId || !state?.inFlight) return;
 	state.inFlight = false;
-	for (const controller of ownedSupervisors.get(ownerId) ?? []) controller.releaseDisplay?.(state.turn);
+	for (const controller of ownedSupervisors.get(ownerId)?.keys() ?? []) controller.releaseDisplay?.(state.turn);
 }
 
 /**
@@ -668,7 +703,7 @@ export function resumeComputerTurnForOwner(ownerId: string | undefined): void {
 	const from = state.turn;
 	state.turn = from + 1;
 	state.inFlight = true;
-	for (const controller of ownedSupervisors.get(ownerId) ?? []) controller.resumeDisplay?.(from, state.turn);
+	for (const controller of ownedSupervisors.get(ownerId)?.keys() ?? []) controller.resumeDisplay?.(from, state.turn);
 }
 
 /**
@@ -683,17 +718,16 @@ export function computerTurnInFlight(ownerId: string | undefined): number | unde
 /** The user's next message lifts the refusal their Escape set on an agent session's computer use. */
 export function resumeComputerUseForOwner(ownerId: string | undefined): void {
 	if (!ownerId) return;
-	for (const controller of ownedSupervisors.get(ownerId) ?? []) controller.resumeAfterEscape?.();
+	for (const controller of ownedSupervisors.get(ownerId)?.keys() ?? []) controller.resumeAfterEscape?.();
 }
 
-/** Closes every computer session owned by an agent session. */
+/** Releases owned workers; reusable preludes retain registration so a user's message can acknowledge Escape. */
 export async function releaseComputerSessionsForOwner(ownerId: string | undefined): Promise<void> {
 	if (!ownerId) return;
 	ownerTurns.delete(ownerId);
 	const controllers = ownedSupervisors.get(ownerId);
 	if (!controllers) return;
-	ownedSupervisors.delete(ownerId);
-	const results = await Promise.allSettled(Array.from(controllers, controller => controller.close()));
+	const results = await Promise.allSettled(Array.from(controllers.values(), release => release()));
 	const failures = results.flatMap(result => (result.status === "rejected" ? [result.reason] : []));
 	if (failures.length > 0) throw new AggregateError(failures, "Owned computer workers did not stop");
 }

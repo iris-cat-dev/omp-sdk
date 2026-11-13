@@ -39,6 +39,7 @@
 
 ### Fixed
 
+- Fixed Computer use becoming permanently unavailable in the same conversation after host Stop or `computer.close()`: workers now restart without retaining foreground grants, while physical-Escape stops survive until the user's next message and final conversation disposal remains terminal.
 - Fixed existing and new Codex sessions ignoring newly added accounts while the model catalog cache was still fresh ([#142](https://github.com/iris-cat-dev/omp/issues/142)).
 - Improved `sandbox_fetch` with readable Markdown, bounded large-page previews, browser request headers, charset decoding and alternate validated-address connections; `raw: true` and guest JavaScript preserve complete source responses.
 - Fixed recursive sandbox JavaScript failing QuickJS cleanup under Desktop's Node runtime. A conservative 128 KiB guest stack guard returns a guest `RangeError` and preserves recovery on the next tool call.

@@ -782,6 +782,7 @@ it("lets the computer display sleep while the ACP client asks the user for permi
 		releaseDisplay(turn) {
 			releases.push(turn);
 		},
+		async reset() {},
 		async close() {},
 	});
 	try {

@@ -131,23 +131,24 @@ export function createComputerPrelude(
 		new ComputerSupervisor(currentSession, undefined, undefined, callSessionTool),
 ): EvalPreludeDefinition {
 	const controller = createController(session);
-	const unregisterOwner = registerComputerController(session.getEvalKernelOwnerId?.() ?? undefined, controller);
 	// Eval-first-use boundary: source/declaration assets stay unloaded until a
 	// JavaScript or Python kernel actually asks for its enabled preludes.
 	const { computerPreludeAssets } = require("./computer/prelude-definition");
-	let closed = false;
+	let disposed = false;
 	const lifetime: ComputerLifetime = {
-		isClosed: () => closed,
-		close: async () => {
-			if (closed) return;
-			closed = true;
-			unregisterOwner();
-			unregisterDisposal?.();
-			await controller.close();
-		},
+		isDisposed: () => disposed,
+		close: () => controller.reset(),
 	};
-	const unregisterDisposal = session.registerDisposeCallback?.(() => {
-		void lifetime.close();
+	// Resource release must retain the controller so only a user message can acknowledge Escape.
+	const unregisterOwner = registerComputerController(
+		session.getEvalKernelOwnerId?.() ?? undefined,
+		controller,
+		lifetime.close,
+	);
+	session.registerDisposeCallback?.(() => {
+		disposed = true;
+		unregisterOwner();
+		void controller.close();
 	});
 
 	return {
@@ -187,7 +188,7 @@ function describeComputerCall(parameters: unknown): string | undefined {
 }
 
 interface ComputerLifetime {
-	isClosed(): boolean;
+	isDisposed(): boolean;
 	close(): Promise<void>;
 }
 
@@ -203,12 +204,11 @@ async function invokeComputer(
 	switch (params.action) {
 		case "run":
 		case "call":
-			if (lifetime.isClosed()) throw new ToolError("Computer session is closed");
+			if (lifetime.isDisposed()) throw new ToolError("Computer session is closed");
 			return await runComputer(session, controller, params, context);
 		case "capabilities": {
-			const capabilities = lifetime.isClosed()
-				? undefined
-				: await controller.capabilities(buildComputerSnapshot(session, true), context.signal);
+			if (lifetime.isDisposed()) throw new ToolError("Computer session is closed");
+			const capabilities = await controller.capabilities(buildComputerSnapshot(session, true), context.signal);
 			throwIfAborted(context.signal);
 			return {
 				content: [

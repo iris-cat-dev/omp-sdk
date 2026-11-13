@@ -387,7 +387,7 @@ def _make_computer():
             return details if "backend" in details else None
 
         async def close(self):
-            """End the persistent desktop session; later calls fail."""
+            """Release desktop resources; a later call starts a fresh session without its old control grant."""
             await _invoke("close", {})
 
     return _Computer()
