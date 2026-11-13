@@ -129,7 +129,6 @@ probes. Eligible custom API turns record an explicit served-tier echo, including
 `default` when downgraded, without assuming that an omitted echo confirms UF or
 applying OpenAI billing multipliers to a custom provider.
 
-
 ### Bedrock request options
 
 Provider-level `guardrailIdentifier`, `guardrailVersion`, and `guardrailTrace` attach a guardrail to

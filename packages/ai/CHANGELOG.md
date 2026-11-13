@@ -20,7 +20,7 @@
 
 ### Fixed
 
-- Fixed Ultrafast requests being omitted for custom OpenAI API providers using the official endpoint or an explicitly advertised tier, and preserved their served-tier echoes without applying OpenAI billing multipliers.
+- Fixed Ultrafast requests being omitted for custom OpenAI API providers using the official endpoint or an explicitly advertised tier, and preserved their served-tier echoes without applying OpenAI billing multipliers ([#3](https://github.com/iris-cat-dev/omp-sdk/pull/3) by [@Charlie-chulong](https://github.com/Charlie-chulong)).
 - Fixed manual account selection and automatic rotation returning to an exhausted Codex account when model discovery still listed only older accounts ([#142](https://github.com/iris-cat-dev/omp/issues/142)).
 - Fixed multipart uploads and multi-reference OpenAI image edits failing in Node and embedded desktop SDK hosts. ([#1](https://github.com/iris-cat-dev/omp-sdk/pull/1), thanks [@Charlie-chulong](https://github.com/Charlie-chulong))
 - Fixed Node SDK sessions exiting when an HTTPS proxy closes during TLS negotiation.
