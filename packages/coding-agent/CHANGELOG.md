@@ -39,6 +39,7 @@
 
 ### Fixed
 
+- Fixed custom API model definitions and overrides dropping service-tier declarations, preventing eligible GPT models from using Ultrafast ([#3](https://github.com/iris-cat-dev/omp-sdk/pull/3) by [@Charlie-chulong](https://github.com/Charlie-chulong)).
 - Fixed Computer use becoming permanently unavailable in the same conversation after host Stop or `computer.close()`: workers now restart without retaining foreground grants, while physical-Escape stops survive until the user's next message and final conversation disposal remains terminal.
 - Fixed existing and new Codex sessions ignoring newly added accounts while the model catalog cache was still fresh ([#142](https://github.com/iris-cat-dev/omp/issues/142)).
 - Improved `sandbox_fetch` with readable Markdown, bounded large-page previews, browser request headers, charset decoding and alternate validated-address connections; `raw: true` and guest JavaScript preserve complete source responses.

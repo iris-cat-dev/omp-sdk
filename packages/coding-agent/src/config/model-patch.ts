@@ -262,6 +262,7 @@ export interface ModelPatch {
 	omitMaxOutputTokens?: boolean;
 	/** Whether Codex requests should prefer WebSocket transport. */
 	preferWebsockets?: boolean;
+	serviceTiers?: Model<Api>["serviceTiers"];
 	headers?: Record<string, string>;
 	resolveHeaders?: Model<Api>["resolveHeaders"];
 	compat?: ModelSpec<Api>["compat"];
@@ -306,6 +307,7 @@ export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: 
 	if (patch.maxTokens !== undefined) result.maxTokens = patch.maxTokens;
 	if (patch.omitMaxOutputTokens !== undefined) result.omitMaxOutputTokens = patch.omitMaxOutputTokens;
 	if (patch.preferWebsockets !== undefined) result.preferWebsockets = patch.preferWebsockets;
+	if (patch.serviceTiers !== undefined) result.serviceTiers = patch.serviceTiers;
 	if (patch.contextPromotionTarget !== undefined) result.contextPromotionTarget = patch.contextPromotionTarget;
 	if (patch.compactionModel !== undefined) result.compactionModel = patch.compactionModel;
 	if (patch.remoteCompaction !== undefined) {
@@ -336,6 +338,7 @@ export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: 
 		result.headers = patch.headers;
 		result.resolveHeaders = patch.resolveHeaders;
 		compat = patch.compat;
+		if (patch.serviceTiers === undefined) delete result.serviceTiers;
 		// A same-id definition that omits a lifetime or kind must not carry the
 		// previous route's configuration; buildModel reapplies policy for the new route.
 		if (patch.promptCache === undefined) {

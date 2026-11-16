@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { shouldSendServiceTier } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { runModelsListing } from "../../src/cli/models-cli";
 import { ModelRegistry } from "../../src/config/model-registry";
@@ -60,6 +61,38 @@ describe("ModelRegistry", () => {
 		}
 		return { stdout, stderr };
 	}
+
+	test("configured API tiers control Ultrafast after reload and explicit overrides can revoke it", async () => {
+		const modelsPath = path.join(tmpDir, "models.yaml");
+		for (const entry of [
+			{ serviceTiers: undefined, override: undefined, baseUrl: "https://api.openai.com/v1", allowed: true },
+			{ serviceTiers: ["ultrafast"], override: undefined, baseUrl: "https://gateway.test/v1", allowed: true },
+			{ serviceTiers: ["ultrafast"], override: [], baseUrl: "https://gateway.test/v1", allowed: false },
+			{ serviceTiers: [], override: undefined, baseUrl: "https://api.openai.com/v1", allowed: false },
+			{ serviceTiers: undefined, override: undefined, baseUrl: "https://gateway.test/v1", allowed: false },
+		]) {
+			await Bun.write(
+				modelsPath,
+				JSON.stringify({
+					providers: {
+						custom: {
+							baseUrl: entry.baseUrl,
+							auth: "none",
+							api: "openai-responses",
+							models: [{ id: "gpt-6.1-sol", serviceTiers: entry.serviceTiers }],
+							modelOverrides:
+								entry.override !== undefined ? { "gpt-6.1-sol": { serviceTiers: entry.override } } : {},
+						},
+					},
+				}),
+			);
+			await registry.refresh("offline");
+			expect(registry.getError()).toBeUndefined();
+			const model = registry.find("custom", "gpt-6.1-sol");
+			if (!model) throw new Error("Configured API model disappeared");
+			expect(shouldSendServiceTier("ultrafast", model)).toBe(entry.allowed);
+		}
+	});
 
 	test("warns once for unknown compat keys without disabling models or corrupting JSON output", async () => {
 		const modelsPath = path.join(tmpDir, "models.yaml");

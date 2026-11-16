@@ -129,6 +129,27 @@ describe("shouldSendServiceTier", () => {
 		expect(realizesPriorityServiceTier("ultrafast", openai)).toBe(false);
 	});
 
+	it("allows custom API Ultrafast only with an official origin or an explicit tier declaration", () => {
+		const official = { ...customOpenAI, baseUrl: "https://api.openai.com/v1" };
+		expect(shouldSendServiceTier("ultrafast", official)).toBe(true);
+		expect(shouldSendServiceTier("ultrafast", { ...official, serviceTiers: [] })).toBe(false);
+		expect(shouldSendServiceTier("ultrafast", { ...official, serviceTiers: ["priority"] })).toBe(false);
+		expect(shouldSendServiceTier("ultrafast", { ...customOpenAI, serviceTiers: ["ultrafast"] })).toBe(true);
+		expect(shouldSendServiceTier("ultrafast", { ...orOpenAI, serviceTiers: ["ultrafast"] })).toBe(false);
+		expect(shouldSendServiceTier("ultrafast", { ...fireworksOpenAI, serviceTiers: ["ultrafast"] })).toBe(false);
+	});
+
+	it.each([
+		"https://api.openai.com.gateway.test/v1",
+		"https://api.openai.com@gateway.test/v1",
+		"https://user@api.openai.com/v1",
+		"http://api.openai.com/v1",
+		"https://api.openai.com:8443/v1",
+		"not-a-url",
+	])("does not infer Ultrafast from a non-official API origin: %s", baseUrl => {
+		expect(shouldSendServiceTier("ultrafast", { ...customOpenAI, baseUrl })).toBe(false);
+	});
+
 	it("gates Codex priority/scale only on a non-empty discovered tier list", () => {
 		const unlisted = { ...codex, serviceTiers: ["ultrafast"] };
 		expect(shouldSendServiceTier("priority", unlisted)).toBe(false);

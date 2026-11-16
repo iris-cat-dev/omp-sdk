@@ -35,6 +35,7 @@ import type {
 	ToolChoice,
 	ToolResultMessage,
 } from "../types";
+import { parseServiceTier, shouldSendServiceTier } from "../types";
 import { normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import { isDemotedThinking, kStreamingLastParseLen } from "../utils/block-symbols";
@@ -1381,6 +1382,7 @@ const streamOpenAICompletionsOnce = (
 				onGraceEnd: () => requestAbortController.abort(),
 				awaitDrainOnReturn: options?.waitForTerminalDrain,
 			});
+			const recordsServiceTier = shouldSendServiceTier("ultrafast", model);
 			for await (const chunk of terminalAwareStream) {
 				if (!chunk || typeof chunk !== "object") continue;
 				// Rate-limit/overload bodies sent inside an HTTP 200 stream (Azure,
@@ -1404,6 +1406,9 @@ const streamOpenAICompletionsOnce = (
 				// OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
 				// and each chunk in a streamed completion carries the same id.
 				output.responseId ||= chunk.id;
+				if (recordsServiceTier && chunk.service_tier != null) {
+					output.serviceTier = parseServiceTier(chunk.service_tier);
+				}
 
 				// Aggregators (OpenRouter, Vercel AI Gateway, …) report the upstream
 				// provider that actually served the request via a top-level `provider`

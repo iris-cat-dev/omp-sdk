@@ -157,7 +157,7 @@ export type ServiceTierFamily = "openai" | "anthropic" | "google";
  */
 export type ServiceTierByFamily = Partial<Record<ServiceTierFamily, ServiceTier>>;
 
-type ServiceTierModel = Pick<Model, "provider" | "api" | "identity"> & Partial<Pick<Model, "serviceTiers">>;
+type ServiceTierModel = Pick<Model, "provider" | "api" | "identity"> & Partial<Pick<Model, "baseUrl" | "serviceTiers">>;
 // The service-tier matrix below intentionally stays in TypeScript rather than
 // the KDL compat tree: `shouldSendServiceTier` accepts bare provider strings
 // (agent telemetry, google-shared header placement) and the stats parser
@@ -240,8 +240,10 @@ export function resolveModelServiceTier(
  * `service_tier_for_request`); an empty or missing list counts as "not
  * reported" — accounts whose `/models` lists no tiers keep `/fast` — so the
  * provider-level answer stands. `flex` and `default` are never gated.
- * First-party OpenAI takes `ultrafast` as-is. A bare provider string cannot
- * carry the list, so it answers for the provider alone.
+ * First-party OpenAI takes `ultrafast` as-is. Custom OpenAI API models may
+ * opt in through an advertised tier list, or an official OpenAI endpoint when
+ * no list is available. This is protocol support, not project entitlement.
+ * A bare provider string cannot carry that evidence.
  */
 export function shouldSendServiceTier(
 	serviceTier: ServiceTier | null | undefined,
@@ -260,7 +262,18 @@ export function shouldSendServiceTier(
 		if (advertised !== undefined && advertised.length > 0) return advertised.includes(serviceTier);
 	}
 	if (serviceTier === "ultrafast") {
-		return provider === "openai" || (typeof target === "string" && provider === "openai-codex");
+		if (provider === "openai" || (typeof target === "string" && provider === "openai-codex")) return true;
+		if (typeof target === "string" || !target || provider === "openrouter" || !isOpenAIServiceTierModel(target)) {
+			return false;
+		}
+		if (target.serviceTiers !== undefined) return target.serviceTiers.includes("ultrafast");
+		if (!target.baseUrl) return false;
+		try {
+			const url = new URL(target.baseUrl);
+			return url.origin === "https://api.openai.com" && !url.username && !url.password;
+		} catch {
+			return false;
+		}
 	}
 	if (provider === "openai" || provider === "openai-codex") return true;
 	if (provider === "openrouter") {

@@ -386,7 +386,7 @@ export function resolveOpenAIRequestSetup(
 export function applyOpenAIServiceTier(
 	params: { service_tier?: ServiceTier | null | undefined },
 	serviceTier: ServiceTier | null | undefined,
-	model: Pick<Model, "provider" | "api" | "identity">,
+	model: Pick<Model, "provider" | "api" | "identity"> & Partial<Pick<Model, "baseUrl" | "serviceTiers">>,
 ): void {
 	if (!shouldSendServiceTier(serviceTier, model)) return;
 	params.service_tier = serviceTier;
@@ -423,20 +423,23 @@ function getOpenAIResponsesServiceTierCostMultiplier(
  * Adjust resolved cost by the service tier OpenAI actually billed — parity with
  * Codex (`applyCodexServiceTierPricing`), but with the standard (non-Codex)
  * multipliers. The served tier comes from the response echo, falling back to the
- * resolved request tier. Scoped to `provider: "openai"` (the only standard
- * Responses biller) so an echoed `service_tier` from an Azure/OpenRouter/Copilot
- * proxy can never skew those costs.
+ * resolved request tier. Billing multipliers remain scoped to `provider:
+ * "openai"`. Eligible custom API routes retain the provider's explicit tier
+ * echo without applying OpenAI's prices or inferring a served tier.
  *
  * Returns the tier the turn ran on for the caller to record on the message, and
  * counts the premium request the tier bills.
  */
 export function applyOpenAIResponsesServiceTierCost(
-	model: Pick<Model, "provider" | "serviceTierCost" | "api" | "identity">,
+	model: Pick<Model, "provider" | "serviceTierCost" | "api" | "identity"> &
+		Partial<Pick<Model, "baseUrl" | "serviceTiers">>,
 	usage: AssistantMessage["usage"],
 	responseServiceTier: unknown,
 	requestServiceTier: ServiceTier | null | undefined,
 ): ServiceTier | undefined {
-	if (model.provider !== "openai") return undefined;
+	if (model.provider !== "openai") {
+		return shouldSendServiceTier("ultrafast", model) ? parseServiceTier(responseServiceTier) : undefined;
+	}
 	// The response echo is authoritative when present (OpenAI may downgrade a
 	// requested priority/flex turn to default under load); only fall back to the
 	// requested tier when the response omits the echo entirely.
