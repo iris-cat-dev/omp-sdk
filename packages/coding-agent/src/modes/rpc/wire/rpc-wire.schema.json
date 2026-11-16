@@ -3055,6 +3055,13 @@
 				"sessionName": {
 					"type": "string"
 				},
+				"titleSource": {
+					"enum": [
+						"auto",
+						"user"
+					],
+					"type": "string"
+				},
 				"autoCompactionEnabled": {
 					"type": "boolean",
 					"default": false
@@ -5412,13 +5419,20 @@
 				},
 				"title": {
 					"type": "string"
+				},
+				"titleSource": {
+					"enum": [
+						"auto",
+						"user"
+					],
+					"type": "string"
 				}
 			},
 			"required": [
 				"type",
 				"sessionId"
 			],
-			"description": "A builtin slash command changed the session title."
+			"description": "The current native session title and its source, sent at startup, on renames, and after session switches."
 		},
 		"ConfigUpdateEvent": {
 			"type": "object",

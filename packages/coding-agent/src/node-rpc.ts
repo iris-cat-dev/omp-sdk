@@ -41,6 +41,8 @@ export interface NodeRpcHostOptions {
 	thinkingOptionId?: string;
 	session?: string;
 	noSession?: boolean;
+	/** Opt in to native session auto-titling; disabled by default and for subagents. */
+	autoTitle?: boolean;
 	systemPrompt?: string;
 	extraArgs?: string[];
 	extensions?: string[];
@@ -194,6 +196,7 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 		agentDir,
 		settings,
 		sessionManager,
+		autoTitle: options.autoTitle === true,
 		serviceOwnerId: process.env.OMP_DESKTOP_SERVICE_OWNER || undefined,
 		modelPattern: parsed.provider && parsed.model ? `${parsed.provider}/${parsed.model}` : parsed.model,
 		thinkingLevel: parsed.thinking,

@@ -3250,6 +3250,8 @@ pub struct SessionState {
 	pub session_file: Option<String>,
 	#[serde(rename = "sessionName", default, skip_serializing_if = "Option::is_none")]
 	pub session_name: Option<String>,
+	#[serde(rename = "titleSource", default, skip_serializing_if = "Option::is_none")]
+	pub title_source: Option<SessionStateTitleSource>,
 	#[serde(rename = "autoCompactionEnabled", default = "default_session_state_auto_compaction_enabled")]
 	pub auto_compaction_enabled: bool,
 	#[serde(rename = "fastModeEnabled", default = "default_session_state_fast_mode_enabled")]
@@ -4531,13 +4533,15 @@ pub struct CommandOutputEvent {
 	pub text: String,
 }
 
-/// A builtin slash command changed the session title.
+/// The current native session title and its source, sent at startup, on renames, and after session switches.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfoUpdateEvent {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub title: Option<String>,
+	#[serde(rename = "titleSource", default, skip_serializing_if = "Option::is_none")]
+	pub title_source: Option<SessionInfoUpdateEventTitleSource>,
 }
 
 /// A builtin slash command changed the model configuration.
@@ -5196,7 +5200,7 @@ pub enum RpcNotification {
 	BtwRecord(BtwRecordEvent),
 	/// Output of a builtin slash command.
 	CommandOutput(CommandOutputEvent),
-	/// A builtin slash command changed the session title.
+	/// The current native session title and its source, sent at startup, on renames, and after session switches.
 	SessionInfoUpdate(SessionInfoUpdateEvent),
 	/// A builtin slash command changed the model configuration.
 	ConfigUpdate(ConfigUpdateEvent),
@@ -6217,6 +6221,24 @@ impl<'de> Deserialize<'de> for LitCompleted {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionStateTitleSource {
+	#[serde(rename = "auto")]
+	Auto,
+	#[serde(rename = "user")]
+	User,
+}
+
+impl SessionStateTitleSource {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Auto => "auto",
+			Self::User => "user",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LogoutAccountType {
 	#[serde(rename = "api_key")]
 	ApiKey,
@@ -6272,6 +6294,24 @@ impl DictationStateEventState {
 			Self::Starting => "starting",
 			Self::Recording => "recording",
 			Self::Transcribing => "transcribing",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionInfoUpdateEventTitleSource {
+	#[serde(rename = "auto")]
+	Auto,
+	#[serde(rename = "user")]
+	User,
+}
+
+impl SessionInfoUpdateEventTitleSource {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Auto => "auto",
+			Self::User => "user",
 		}
 	}
 }

@@ -129,8 +129,8 @@ export const frameDefs = {
 	),
 	CommandOutputEvent: doc({ type: "'command_output'", text: "string" }, "Output of a builtin slash command."),
 	SessionInfoUpdateEvent: doc(
-		{ type: "'session_info_update'", "title?": "string", sessionId: "string" },
-		"A builtin slash command changed the session title.",
+		{ type: "'session_info_update'", "title?": "string", sessionId: "string", "titleSource?": "'auto' | 'user'" },
+		"The current native session title and its source, sent at startup, on renames, and after session switches.",
 	),
 	ConfigUpdateEvent: doc(
 		{ type: "'config_update'", "model?": "ModelInfo", "thinkingLevel?": "ThinkingLevel" },

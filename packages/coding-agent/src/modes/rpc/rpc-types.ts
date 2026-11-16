@@ -214,6 +214,7 @@ export interface RpcSessionState {
 	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
+	titleSource?: "auto" | "user";
 	autoCompactionEnabled: boolean;
 	fastModeEnabled: boolean;
 	fastModeActive: boolean;

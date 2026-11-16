@@ -752,6 +752,7 @@ class SessionState:
     interrupt_mode: InterruptMode = "immediate"
     session_file: str | None = None
     session_name: str | None = None
+    title_source: Literal["auto", "user"] | None = None
     auto_compaction_enabled: bool = False
     fast_mode_enabled: bool = False
     fast_mode_active: bool = False
@@ -1536,10 +1537,11 @@ class CommandOutputEvent:
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class SessionInfoUpdateEvent:
-    """A builtin slash command changed the session title."""
+    """The current native session title and its source, sent at startup, on renames, and after session switches."""
     type: Literal["session_info_update"] = "session_info_update"
     session_id: str
     title: str | None = None
+    title_source: Literal["auto", "user"] | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2237,6 +2239,7 @@ def parse_session_state(value: object, path: str = "SessionState") -> SessionSta
         interrupt_mode=defaulted(payload, "interruptMode", _decode_interrupt_mode, path, "immediate"),
         session_file=optional(payload, "sessionFile", decode_str, path),
         session_name=optional(payload, "sessionName", decode_str, path),
+        title_source=optional(payload, "titleSource", cast('Decoder[Literal["auto", "user"]]', literal(frozenset({"auto", "user"}))), path),
         auto_compaction_enabled=defaulted(payload, "autoCompactionEnabled", decode_bool, path, False),
         fast_mode_enabled=defaulted(payload, "fastModeEnabled", decode_bool, path, False),
         fast_mode_active=defaulted(payload, "fastModeActive", decode_bool, path, False),
@@ -3116,6 +3119,7 @@ def parse_session_info_update_event(value: object, path: str = "SessionInfoUpdat
     return SessionInfoUpdateEvent(
         session_id=required(payload, "sessionId", decode_str, path),
         title=optional(payload, "title", decode_str, path),
+        title_source=optional(payload, "titleSource", cast('Decoder[Literal["auto", "user"]]', literal(frozenset({"auto", "user"}))), path),
     )
 
 
@@ -4080,7 +4084,7 @@ class WireClient:
         return self._listen("command_output", listener)
 
     def on_session_info_update(self, listener: Callable[[SessionInfoUpdateEvent], None]) -> Callable[[], None]:
-        """Subscribe to `session_info_update`: A builtin slash command changed the session title."""
+        """Subscribe to `session_info_update`: The current native session title and its source, sent at startup, on renames, and after session switches."""
         return self._listen("session_info_update", listener)
 
     def on_config_update(self, listener: Callable[[ConfigUpdateEvent], None]) -> Callable[[], None]:

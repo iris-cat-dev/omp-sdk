@@ -95,6 +95,7 @@ import {
 import { RpcSessionEventForwarder } from "./rpc-session-events";
 import { isSessionSettled } from "../../session/session-settle";
 import { RpcSessionSettleWatcher, watchedScheduledTurnProbe } from "./rpc-session-settle";
+import { RpcSessionTitles } from "./rpc-session-titles";
 import { RpcSubagentRegistry, readRpcSubagentTranscript, resolveOwnedLiveSubagent } from "./rpc-subagents";
 import type {
 	RpcAbortAndRestoreQueueResult,
@@ -1453,14 +1454,16 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// stdout froze the whole worker, stdin reader included. An fd write stream
 	// writes from the threadpool and reports backpressure, letting the writer spool.
 	const stdout = process.platform === "win32" ? fs.createWriteStream("", { fd: 1, autoClose: false }) : process.stdout;
-	// The writer can fail before the bridge is constructed.
+	// The writer can fail before the protocol bridges are constructed.
 	let dictationBridge: RpcDictationBridge | undefined = undefined;
+	let titleBridge: RpcSessionTitles | undefined;
 	const outputWriter = new RpcOutputWriter(stdout, failure => {
 		void handleRpcOutputFailure(failure, {
 			stderr: process.platform === "win32" ? fs.createWriteStream("", { fd: 2, autoClose: false }) : process.stderr,
 			log: diagnostic => logger.error(diagnostic),
 			dispose: async () => {
 				try {
+					titleBridge?.dispose();
 					dictationBridge?.dispose();
 				} finally {
 					await session.dispose();
@@ -1483,6 +1486,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		if (isRecord(obj) && obj.type === "response" && obj.command === "negotiate_protocol" && obj.success === true)
 			frameEncoder.setProtocolVersion(2);
 	};
+	const sessionTitles = new RpcSessionTitles(session, output);
+	titleBridge = sessionTitles;
 	const emitRpcTitles = shouldEmitRpcTitles();
 
 	const success = <T extends RpcCommand["type"]>(
@@ -1557,6 +1562,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			return await change();
 		} finally {
 			sessionChangesInProgress--;
+			sessionTitles.refresh();
 		}
 	};
 	const subagentRegistry = subagentEventBus ? new RpcSubagentRegistry(subagentEventBus, output) : undefined;
@@ -1845,6 +1851,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		},
 		onShutdown: () => {
 			shutdownState.requested = true;
+			sessionTitles.dispose();
 			dictationBridge.dispose();
 		},
 		trackAgentInvokingMessage: task => {
@@ -1885,6 +1892,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	 * rejection with no latched store failure still surfaces to the caller.
 	 */
 	const disposeAndExit = async (): Promise<never> => {
+		sessionTitles.dispose();
 		try {
 			// The process ends regardless; report an unsaved side answer instead of skipping dispose.
 			await btw.close().catch(btwError => {
@@ -2056,9 +2064,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 						builtinCommandTasks.add(execution);
 						shutdownCoordinator.track(execution);
 					},
-					notifyTitleChanged: async () => {
-						output({ type: "session_info_update", title: session.sessionName, sessionId: session.sessionId });
-					},
+					notifyTitleChanged: () => sessionTitles.refresh(),
 					notifyConfigChanged: async () => {
 						output({ type: "config_update", model: session.model, thinkingLevel: session.thinkingLevel });
 					},
@@ -2412,6 +2418,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					sessionFile: session.sessionFile,
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
+					titleSource: session.sessionManager.titleSource,
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					queuedMessageCount: session.queuedMessageCount,
 					hasPendingAsyncWork: session.hasPendingAsyncWork(),

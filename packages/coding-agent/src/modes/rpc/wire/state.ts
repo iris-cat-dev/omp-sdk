@@ -180,6 +180,7 @@ export const stateDefs = {
 		"sessionFile?": "string",
 		sessionId: "string",
 		"sessionName?": "string",
+		"titleSource?": "'auto' | 'user'",
 		autoCompactionEnabled: absentAs("boolean", false),
 		fastModeEnabled: absentAs("boolean", false),
 		fastModeActive: absentAs("boolean", false),

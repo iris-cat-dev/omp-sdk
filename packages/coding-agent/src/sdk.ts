@@ -952,7 +952,7 @@ export interface CreateAgentSessionOptions {
 	tuiTranscript?: boolean;
 	/**
 	 * Name the unnamed session from the operator's messages once each reply begins
-	 * (see `title.generator`). Only the interactive TUI sets this; ignored for subagents. Default: false.
+	 * (see `title.generator`). Hosts opt in for user sessions; ignored for subagents. Default: false.
 	 */
 	autoTitle?: boolean;
 	/**

@@ -583,6 +583,7 @@ export interface SessionState {
 	interruptMode?: InterruptMode;
 	sessionFile?: string;
 	sessionName?: string;
+	titleSource?: "auto" | "user";
 	autoCompactionEnabled?: boolean;
 	fastModeEnabled?: boolean;
 	fastModeActive?: boolean;
@@ -1303,11 +1304,12 @@ export interface CommandOutputEvent {
 	text: string;
 }
 
-/** A builtin slash command changed the session title. */
+/** The current native session title and its source, sent at startup, on renames, and after session switches. */
 export interface SessionInfoUpdateEvent {
 	type: "session_info_update";
 	sessionId: string;
 	title?: string;
+	titleSource?: "auto" | "user";
 }
 
 /** A builtin slash command changed the model configuration. */

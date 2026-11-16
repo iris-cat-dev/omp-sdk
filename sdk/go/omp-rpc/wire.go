@@ -2934,20 +2934,21 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 }
 
 type SessionState struct {
-	SessionID             string         `json:"sessionId"`
-	Model                 *ModelInfo     `json:"model,omitempty"`
-	ThinkingLevel         *ThinkingLevel `json:"thinkingLevel,omitempty"`
-	ApprovalMode          ApprovalMode   `json:"approvalMode"`
-	IsStreaming           bool           `json:"isStreaming"`
-	IsCompacting          bool           `json:"isCompacting"`
-	SteeringMode          QueueMode      `json:"steeringMode"`
-	FollowUpMode          QueueMode      `json:"followUpMode"`
-	InterruptMode         InterruptMode  `json:"interruptMode"`
-	SessionFile           *string        `json:"sessionFile,omitempty"`
-	SessionName           *string        `json:"sessionName,omitempty"`
-	AutoCompactionEnabled bool           `json:"autoCompactionEnabled"`
-	FastModeEnabled       bool           `json:"fastModeEnabled"`
-	FastModeActive        bool           `json:"fastModeActive"`
+	SessionID             string                   `json:"sessionId"`
+	Model                 *ModelInfo               `json:"model,omitempty"`
+	ThinkingLevel         *ThinkingLevel           `json:"thinkingLevel,omitempty"`
+	ApprovalMode          ApprovalMode             `json:"approvalMode"`
+	IsStreaming           bool                     `json:"isStreaming"`
+	IsCompacting          bool                     `json:"isCompacting"`
+	SteeringMode          QueueMode                `json:"steeringMode"`
+	FollowUpMode          QueueMode                `json:"followUpMode"`
+	InterruptMode         InterruptMode            `json:"interruptMode"`
+	SessionFile           *string                  `json:"sessionFile,omitempty"`
+	SessionName           *string                  `json:"sessionName,omitempty"`
+	TitleSource           *SessionStateTitleSource `json:"titleSource,omitempty"`
+	AutoCompactionEnabled bool                     `json:"autoCompactionEnabled"`
+	FastModeEnabled       bool                     `json:"fastModeEnabled"`
+	FastModeActive        bool                     `json:"fastModeActive"`
 	// `/slow` applies to the active model.
 	SlowModeSupported bool `json:"slowModeSupported"`
 	// `/slow` is on for the active model; always `false` when `slowModeSupported` is `false`.
@@ -2991,6 +2992,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.defaulted("interruptMode", &out.InterruptMode, `"immediate"`)
 	d.optional("sessionFile", &out.SessionFile)
 	d.optional("sessionName", &out.SessionName)
+	d.optional("titleSource", &out.TitleSource)
 	d.defaulted("autoCompactionEnabled", &out.AutoCompactionEnabled, `false`)
 	d.defaulted("fastModeEnabled", &out.FastModeEnabled, `false`)
 	d.defaulted("fastModeActive", &out.FastModeActive, `false`)
@@ -3015,6 +3017,26 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	}
 	*v = out
 	return nil
+}
+
+type SessionStateTitleSource string
+
+const (
+	SessionStateTitleSourceAuto SessionStateTitleSource = "auto"
+	SessionStateTitleSourceUser SessionStateTitleSource = "user"
+)
+
+func (v *SessionStateTitleSource) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "SessionStateTitleSource")
+	if err != nil {
+		return err
+	}
+	switch value := SessionStateTitleSource(s); value {
+	case SessionStateTitleSourceAuto, SessionStateTitleSourceUser:
+		*v = value
+		return nil
+	}
+	return unknownValue("SessionStateTitleSource", s)
 }
 
 type BashResult struct {
@@ -5843,10 +5865,11 @@ func (v CommandOutputEvent) MarshalJSON() ([]byte, error) {
 	return encodeObject(plain(v), `"type":"command_output"`, nil)
 }
 
-// A builtin slash command changed the session title.
+// The current native session title and its source, sent at startup, on renames, and after session switches.
 type SessionInfoUpdateEvent struct {
-	SessionID string  `json:"sessionId"`
-	Title     *string `json:"title,omitempty"`
+	SessionID   string                             `json:"sessionId"`
+	Title       *string                            `json:"title,omitempty"`
+	TitleSource *SessionInfoUpdateEventTitleSource `json:"titleSource,omitempty"`
 }
 
 func (v *SessionInfoUpdateEvent) UnmarshalJSON(data []byte) error {
@@ -5859,6 +5882,7 @@ func (v *SessionInfoUpdateEvent) decodeFrom(raw map[string]json.RawMessage) erro
 	d.constant("type", "session_info_update")
 	d.required("sessionId", &out.SessionID)
 	d.optional("title", &out.Title)
+	d.optional("titleSource", &out.TitleSource)
 	if d.err != nil {
 		return d.err
 	}
@@ -5869,6 +5893,26 @@ func (v *SessionInfoUpdateEvent) decodeFrom(raw map[string]json.RawMessage) erro
 func (v SessionInfoUpdateEvent) MarshalJSON() ([]byte, error) {
 	type plain SessionInfoUpdateEvent
 	return encodeObject(plain(v), `"type":"session_info_update"`, nil)
+}
+
+type SessionInfoUpdateEventTitleSource string
+
+const (
+	SessionInfoUpdateEventTitleSourceAuto SessionInfoUpdateEventTitleSource = "auto"
+	SessionInfoUpdateEventTitleSourceUser SessionInfoUpdateEventTitleSource = "user"
+)
+
+func (v *SessionInfoUpdateEventTitleSource) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "SessionInfoUpdateEventTitleSource")
+	if err != nil {
+		return err
+	}
+	switch value := SessionInfoUpdateEventTitleSource(s); value {
+	case SessionInfoUpdateEventTitleSourceAuto, SessionInfoUpdateEventTitleSourceUser:
+		*v = value
+		return nil
+	}
+	return unknownValue("SessionInfoUpdateEventTitleSource", s)
 }
 
 // A builtin slash command changed the model configuration.
