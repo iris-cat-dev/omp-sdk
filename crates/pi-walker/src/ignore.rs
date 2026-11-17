@@ -242,13 +242,15 @@ const HAS_DOT_IGNORE: u8 = 1;
 const HAS_GITIGNORE: u8 = 2;
 const HAS_GIT_DIR: u8 = 4;
 const HAS_REPO_MARKER: u8 = 8;
+const HAS_RGIGNORE: u8 = 16;
 
-/// Per-directory ignore sources, in precedence order.
-const SOURCES: [&str; 3] = [".ignore", ".gitignore", ".git/info/exclude"];
+/// Per-directory sources. `.rgignore` is enabled only by strict file search
+/// and takes precedence over `.ignore`; the existing indices remain stable.
+const SOURCES: [&str; 4] = [".ignore", ".gitignore", ".git/info/exclude", ".rgignore"];
 
 /// Listing names that make each source worth reading: the file itself, or a
 /// `.git` entry for the exclude file.
-const SOURCE_FLAGS: [u8; 3] = [HAS_DOT_IGNORE, HAS_GITIGNORE, HAS_GIT_DIR];
+const SOURCE_FLAGS: [u8; 4] = [HAS_DOT_IGNORE, HAS_GITIGNORE, HAS_GIT_DIR, HAS_RGIGNORE];
 
 impl Names {
 	/// Notes `name` (a listed entry of type `file_type`) if it is `.ignore`,
@@ -266,9 +268,24 @@ impl Names {
 		}
 	}
 
+	/// Enables ripgrep's additional ignore file without changing pi walks.
+	pub(crate) fn record_rgignore(&mut self, name: &[u8], file_type: FileType) {
+		if name == b".rgignore" && file_type != FileType::Dir {
+			self.0 |= HAS_RGIGNORE;
+		}
+	}
+
 	/// The listing has none of those names.
 	pub(crate) const fn is_empty(self) -> bool {
 		self.0 == 0
+	}
+
+	/// Only `.git`, not pi's `.jj` marker, establishes a Git repository.
+	pub(crate) fn git_only(mut self, require_git: bool) -> Self {
+		if require_git && !self.has(HAS_GIT_DIR) {
+			self.0 &= !HAS_REPO_MARKER;
+		}
+		self
 	}
 
 	const fn has(self, flag: u8) -> bool {
@@ -281,8 +298,8 @@ impl Names {
 /// at (default when absent).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DirIgnores {
-	pub(crate) files:  [Option<Arc<Rules>>; 3],
-	pub(crate) stamps: [Stamp; 3],
+	pub(crate) files:  [Option<Arc<Rules>>; 4],
+	pub(crate) stamps: [Stamp; 4],
 }
 
 /// Reads up to [`MAX_IGNORE_BYTES`] of an opened file into `buf`.
@@ -317,7 +334,7 @@ impl DirIgnores {
 		let mut out = Self::default();
 		let mut buf = Vec::new();
 		for (k, _) in Self::source_names(names) {
-			let opened = if k < 2 {
+			let opened = if k != 2 {
 				session.open_file_at(dir, SOURCES[k].as_bytes()).await
 			} else {
 				open_exclude(session, dir).await
@@ -367,8 +384,8 @@ impl DirIgnores {
 #[derive(Debug)]
 pub(crate) struct Frame {
 	parent:             Option<Arc<Self>>,
-	/// `.ignore`, `.gitignore`, `.git/info/exclude`.
-	files:              [Option<Arc<Rules>>; 3],
+	/// `.ignore`, `.gitignore`, `.git/info/exclude`, optional `.rgignore`.
+	files:              [Option<Arc<Rules>>; 4],
 	/// The frame directory relative to the walk root (empty for the root).
 	base:               Box<[u8]>,
 	/// For frames above the root: the walk root relative to the frame
@@ -397,7 +414,7 @@ impl Drop for Frame {
 impl Frame {
 	fn new(
 		parent: Option<Arc<Self>>,
-		files: [Option<Arc<Rules>>; 3],
+		files: [Option<Arc<Rules>>; 4],
 		has_git: bool,
 		base: Box<[u8]>,
 		up: Box<[u8]>,
@@ -442,11 +459,12 @@ impl Frame {
 /// paths it is matched against.
 #[derive(Debug)]
 pub(crate) struct Ignorer {
-	global: Option<Rules>,
+	global:      Option<Rules>,
 	/// Root of the global matcher (the process cwd), match spelling.
-	cwd:    Vec<u8>,
+	cwd:         Vec<u8>,
 	/// The walk root, match spelling.
-	root:   Vec<u8>,
+	root:        Vec<u8>,
+	require_git: bool,
 }
 
 impl Ignorer {
@@ -461,6 +479,7 @@ impl Ignorer {
 		session: &mut Session,
 		_fs: &Fs,
 		root: &Path,
+		require_git: bool,
 	) -> (Self, Option<Arc<Frame>>) {
 		let mut buf = Vec::new();
 		let GitConfigs { configs, home, fallback } = git_configs();
@@ -484,12 +503,12 @@ impl Ignorer {
 		.map(|_| Rules::parse(&buf))
 		.filter(|rules| !rules.is_empty());
 		let cwd = std::env::current_dir().map_or_default(|cwd| match_spelling(&cwd).into_owned());
-		let ignorer = Self { global, cwd, root: match_spelling(root).into_owned() };
-		(ignorer, ancestor_frames(session, root, &mut buf).await)
+		let ignorer = Self { global, cwd, root: match_spelling(root).into_owned(), require_git };
+		(ignorer, ancestor_frames(session, root, &mut buf, require_git).await)
 	}
 
-	/// Whether the entry at walk-relative `rel` is ignored by the chain
-	/// ending at `frame`. `scratch` is per-worker.
+	/// Whether the entry is ignored, for pi consumers that do not need the
+	/// whitelist decision to override hidden filtering.
 	pub(crate) fn ignored(
 		&self,
 		frame: Option<&Frame>,
@@ -497,17 +516,33 @@ impl Ignorer {
 		is_dir: bool,
 		scratch: &mut Vec<u8>,
 	) -> bool {
-		let Some(frame) = frame else { return false };
+		self.matched(frame, rel, is_dir, scratch) == Match::Ignore
+	}
+
+	/// The highest-precedence ignore or whitelist decision for the entry.
+	pub(crate) fn matched(
+		&self,
+		frame: Option<&Frame>,
+		rel: &[u8],
+		is_dir: bool,
+		scratch: &mut Vec<u8>,
+	) -> Match {
+		let Some(frame) = frame else {
+			return Match::None;
+		};
 		let global = self.global.as_ref().filter(|_| frame.any_git);
 		if !frame.chain_has_matchers && global.is_none() {
-			return false;
+			return Match::None;
 		}
-		let mut found = [Match::None; 3];
+		let mut found = [Match::None; 4];
 		let mut saw_git = false;
 		let mut f = Some(frame);
 		while let Some(cur) = f.filter(|f| f.chain_has_matchers) {
 			for (k, slot) in found.iter_mut().enumerate() {
-				if *slot != Match::None || (k == 2 && (!frame.any_git || saw_git)) {
+				if *slot != Match::None
+					|| ((k == 1 || k == 2) && self.require_git && (!frame.any_git || saw_git))
+					|| (k == 2 && (!frame.any_git || saw_git))
+				{
 					continue;
 				}
 				if let Some(rules) = &cur.files[k] {
@@ -517,12 +552,15 @@ impl Ignorer {
 			saw_git |= cur.has_git;
 			f = cur.parent.as_deref();
 		}
-		if let Some(m) = found.into_iter().find(|m| *m != Match::None) {
-			return m == Match::Ignore;
+		if let Some(m) = [3, 0, 1, 2]
+			.into_iter()
+			.map(|k| found[k])
+			.find(|m| *m != Match::None)
+		{
+			return m;
 		}
-		global.is_some_and(|rules| {
-			rules.matched(self.global_path(rules, rel, scratch), is_dir) == Match::Ignore
-		})
+		global
+			.map_or(Match::None, |rules| rules.matched(self.global_path(rules, rel, scratch), is_dir))
 	}
 
 	/// Mirrors how the `ignore` crate strips the global matcher's root (the
@@ -588,6 +626,7 @@ async fn ancestor_frames(
 	session: &mut Session,
 	root: &Path,
 	buf: &mut Vec<u8>,
+	require_git: bool,
 ) -> Option<Arc<Frame>> {
 	async fn exists(session: &mut Session, dir: &Path, name: &str) -> bool {
 		session
@@ -611,20 +650,38 @@ async fn ancestor_frames(
 		}
 		up = next;
 		ancestors.push((parent, up.clone()));
-		if exists(session, parent, ".git").await || exists(session, parent, ".jj").await {
+		if exists(session, parent, ".git").await
+			|| (!require_git && exists(session, parent, ".jj").await)
+		{
 			repo = Some(ancestors.len() - 1);
-			break;
+			if !require_git {
+				break;
+			}
 		}
 		cur = parent;
 	}
 	let mut frame: Option<Arc<Frame>> = None;
-	for (i, (dir, up)) in ancestors[..=repo?].iter().enumerate().rev() {
-		let has_git = i == repo?;
+	let end = if require_git {
+		ancestors.len()
+	} else {
+		repo? + 1
+	};
+	for (i, (dir, up)) in ancestors[..end].iter().enumerate().rev() {
+		let has_git = if require_git {
+			exists(session, dir, ".git").await
+		} else {
+			i == repo?
+		};
 		let files = [
 			load_ancestor(session, dir, SOURCES[0], up, buf).await,
 			load_ancestor(session, dir, SOURCES[1], up, buf).await,
 			if has_git {
 				load_ancestor(session, dir, SOURCES[2], up, buf).await
+			} else {
+				None
+			},
+			if require_git {
+				load_ancestor(session, dir, SOURCES[3], up, buf).await
 			} else {
 				None
 			},

@@ -491,3 +491,168 @@ pub fn scan_reader<M: Matcher>(
 	searcher.search_reader(matcher, reader, &mut sink)?;
 	Ok(sink.res)
 }
+
+/// Occurrence-oriented scan scratch, reused by every directory worker. Only
+/// the read window, an unfinished line, and one bounded output batch are held.
+#[derive(Default)]
+pub(super) struct FileScanner {
+	chunk:   Vec<u8>,
+	pending: Vec<u8>,
+}
+
+impl FileScanner {
+	pub async fn search<M: Matcher>(
+		&mut self,
+		matcher: &M,
+		file: &mut crate::fs::File,
+		path: &str,
+		control: &super::file_search::FileSearchControl,
+		sink: Option<&tokio::sync::mpsc::Sender<Vec<super::FileSearchMatch>>>,
+		out: &mut Vec<super::FileSearchMatch>,
+	) -> Result<u64, super::GrepError> {
+		self.chunk.resize(BINARY_WINDOW, 0);
+		self.pending.clear();
+		let mut batch = Vec::new();
+		let (mut line_number, mut count) = (1, 0);
+		while !control.stopped() {
+			let n = file
+				.read(&mut self.chunk)
+				.await
+				.map_err(|err| super::GrepError::Search(format!("{path}: {err}")))?;
+			if n == 0 {
+				if !self.pending.is_empty() {
+					count += Self::line(matcher, &self.pending, path, line_number, control, &mut batch)?;
+				}
+				break;
+			}
+			// Like grep-searcher, quit binary files at the first read window
+			// containing NUL; already delivered batches remain valid.
+			if memchr::memchr(0, &self.chunk[..n]).is_some() {
+				break;
+			}
+			let mut start = 0;
+			while start < n && !control.stopped() {
+				let Some(end) = memchr::memchr(b'\n', &self.chunk[start..n]).map(|i| start + i) else {
+					self.pending.extend_from_slice(&self.chunk[start..n]);
+					break;
+				};
+				if self.pending.is_empty() {
+					count += Self::line(
+						matcher,
+						&self.chunk[start..end],
+						path,
+						line_number,
+						control,
+						&mut batch,
+					)?;
+				} else {
+					self.pending.extend_from_slice(&self.chunk[start..end]);
+					count += Self::line(matcher, &self.pending, path, line_number, control, &mut batch)?;
+					self.pending.clear();
+				}
+				line_number += 1;
+				start = end + 1;
+				if batch.len() == 256 {
+					Self::flush(&mut batch, sink, out).await?;
+				}
+			}
+			// Native reads and matching may otherwise run without ever yielding.
+			tokio::task::yield_now().await;
+		}
+		Self::flush(&mut batch, sink, out).await?;
+		Ok(count)
+	}
+
+	fn line<M: Matcher>(
+		matcher: &M,
+		raw: &[u8],
+		path: &str,
+		line_number: u64,
+		control: &super::file_search::FileSearchControl,
+		out: &mut Vec<super::FileSearchMatch>,
+	) -> Result<u64, super::GrepError> {
+		let displayed = raw.strip_suffix(b"\r").unwrap_or(raw);
+		let mut ranges = Vec::new();
+		let mut cursor = Utf16Cursor { bytes: displayed, byte: 0, units: 0 };
+		matcher
+			.find_iter(raw, |mat| {
+				if !control.reserve() {
+					return false;
+				}
+				let start = cursor.at(mat.start());
+				let end = cursor.at(mat.end());
+				ranges.push(super::FileSearchRange { start, length: end - start });
+				!control.stopped()
+			})
+			.map_err(|err| super::GrepError::Search(err.to_string()))?;
+		let count = ranges.len() as u64;
+		if count > 0 {
+			out.push(super::FileSearchMatch {
+				path: path.to_owned(),
+				line_number,
+				line: String::from_utf8_lossy(displayed).into_owned(),
+				ranges,
+			});
+		}
+		Ok(count)
+	}
+
+	async fn flush(
+		batch: &mut Vec<super::FileSearchMatch>,
+		sink: Option<&tokio::sync::mpsc::Sender<Vec<super::FileSearchMatch>>>,
+		out: &mut Vec<super::FileSearchMatch>,
+	) -> Result<(), super::GrepError> {
+		if batch.is_empty() {
+			return Ok(());
+		}
+		if let Some(sink) = sink {
+			sink
+				.send(std::mem::take(batch))
+				.await
+				.map_err(|_| super::GrepError::Sink("file search sink closed".into()))?;
+		} else {
+			out.append(batch);
+		}
+		Ok(())
+	}
+}
+
+/// Converts monotonically increasing byte positions without copying text or
+/// rescanning prefixes. Partial UTF-8 sequences have the same width as a
+/// decoded prefix's replacement character, including zero-width rg matches.
+struct Utf16Cursor<'a> {
+	bytes: &'a [u8],
+	byte:  usize,
+	units: u64,
+}
+
+impl Utf16Cursor<'_> {
+	fn at(&mut self, offset: usize) -> u64 {
+		let offset = offset.min(self.bytes.len());
+		while self.byte < offset {
+			let first = self.bytes[self.byte];
+			if first.is_ascii() {
+				self.byte += 1;
+				self.units += 1;
+				continue;
+			}
+			let width = match first {
+				0xc2..=0xdf => 2,
+				0xe0..=0xef => 3,
+				0xf0..=0xf4 => 4,
+				_ => 1,
+			}
+			.min(self.bytes.len() - self.byte);
+			let (width, units) = match std::str::from_utf8(&self.bytes[self.byte..self.byte + width]) {
+				Ok(_) => (width, 1 + u64::from(width == 4)),
+				Err(err) => (err.error_len().unwrap_or(width), 1),
+			};
+			if self.byte + width > offset {
+				return self.units + 1;
+			}
+			self.byte += width;
+			self.units += units;
+		}
+		self.units
+	}
+}

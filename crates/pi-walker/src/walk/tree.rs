@@ -559,7 +559,7 @@ impl Cx {
 			self.root_dev = self.session.identify(&self.root).await.ok();
 		}
 		let inherited = if self.opts.gitignore {
-			let (ignorer, frame) = Ignorer::new(&mut self.session, &self.fs, &self.root).await;
+			let (ignorer, frame) = Ignorer::new(&mut self.session, &self.fs, &self.root, false).await;
 			self.ignorer = Some(ignorer);
 			frame
 		} else {

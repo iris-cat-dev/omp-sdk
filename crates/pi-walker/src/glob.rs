@@ -145,6 +145,53 @@ impl Selector {
 	}
 }
 
+/// Ripgrep's ordered `--glob` overrides, evaluated before ignore and hidden
+/// rules. Unmatched directories remain traversable; with positive globs,
+/// unmatched files are excluded. Pi's existing selectors remain unchanged.
+#[derive(Clone, Debug)]
+pub struct Overrides {
+	patterns: Vec<String>,
+	matcher:  ignore::overrides::Override,
+}
+
+impl PartialEq for Overrides {
+	fn eq(&self, other: &Self) -> bool {
+		self.patterns == other.patterns
+	}
+}
+
+impl Eq for Overrides {}
+
+impl Overrides {
+	/// Compiles include globs followed by exclude globs, like `rg --glob`.
+	pub fn new(include: &[String], exclude: &[String]) -> Result<Self, PatternError> {
+		let patterns: Vec<String> = include
+			.iter()
+			.cloned()
+			.chain(exclude.iter().map(|glob| format!("!{glob}")))
+			.collect();
+		let mut builder = ignore::overrides::OverrideBuilder::new("");
+		for pattern in &patterns {
+			builder
+				.add(pattern)
+				.map_err(|_| PatternError::new(pattern, "invalid override glob"))?;
+		}
+		let matcher = builder
+			.build()
+			.map_err(|_| PatternError::new("", "invalid override globs"))?;
+		Ok(Self { patterns, matcher })
+	}
+
+	/// The explicit override decision, before filesystem ignore rules.
+	pub(crate) fn matched(&self, path: &[u8], is_dir: bool) -> crate::ignore::Match {
+		match self.matcher.matched(walk::rel_path(path), is_dir) {
+			ignore::Match::None => crate::ignore::Match::None,
+			ignore::Match::Ignore(_) => crate::ignore::Match::Ignore,
+			ignore::Match::Whitelist(_) => crate::ignore::Match::Whitelist,
+		}
+	}
+}
+
 /// Options of a [`glob`] search.
 #[derive(Clone, Debug, Default)]
 pub struct GlobOptions {

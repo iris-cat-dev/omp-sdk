@@ -518,7 +518,8 @@ pub(super) async fn start<K: Sink>(
 		let cache = cache
 			.filter(|_| opts.detail == Detail::Minimal && fs.is_native() && !opts.same_file_system);
 		let (ignorer, root_frame) = if opts.gitignore {
-			let (ignorer, frame) = Ignorer::new(&mut st.session, &fs, &abs_root).await;
+			let (ignorer, frame) =
+				Ignorer::new(&mut st.session, &fs, &abs_root, opts.require_git).await;
 			(Some(ignorer), frame)
 		} else {
 			(None, None)
@@ -767,7 +768,7 @@ impl<K: Sink> Ctx<K> {
 				drop(opened);
 				let frame = match &cached.ignores {
 					Some(ignores) if self.ignorer.is_some() => {
-						ignores.frame(frame.as_ref(), cached.names, rel)
+						ignores.frame(frame.as_ref(), cached.names.git_only(self.opts.require_git), rel)
 					},
 					_ => frame,
 				};
@@ -820,6 +821,9 @@ impl<K: Sink> Ctx<K> {
 		if self.ignorer.is_some() || stamp.is_some() {
 			for record in listing.records() {
 				names.record(listing.name(record), record.file_type);
+				if self.opts.require_git {
+					names.record_rgignore(listing.name(record), record.file_type);
+				}
 			}
 		}
 		let ignores = if self.ignorer.is_none() {
@@ -830,7 +834,7 @@ impl<K: Sink> Ctx<K> {
 			Some(DirIgnores::load(&mut st.session, &dir, names, stamp.is_some()).await)
 		};
 		let frame = match &ignores {
-			Some(ignores) => ignores.frame(frame.as_ref(), names, rel),
+			Some(ignores) => ignores.frame(frame.as_ref(), names.git_only(self.opts.require_git), rel),
 			None => frame,
 		};
 		if let (Some(cache), Some(stamp)) = (self.cache, stamp) {
@@ -880,7 +884,12 @@ impl<K: Sink> Ctx<K> {
 				break;
 			}
 			let name = listing.name(record);
-			if pruned(name, opts.hidden, opts.skip_git, opts.skip_node_modules) {
+			if pruned(
+				name,
+				opts.hidden || opts.overrides.is_some(),
+				opts.skip_git,
+				opts.skip_node_modules,
+			) {
 				continue;
 			}
 			let (mut file_type, mut size, mut mtime) = (record.file_type, record.size, record.mtime);
@@ -913,10 +922,27 @@ impl<K: Sink> Ctx<K> {
 				volatile.extend_from_slice(name);
 				volatile.as_slice()
 			};
-			if let Some(ignorer) = &self.ignorer
-				&& ignorer.ignored(frame.map(|frame| &**frame), path, is_dir, ign)
-			{
+			let overridden = opts
+				.overrides
+				.as_ref()
+				.map_or(crate::ignore::Match::None, |rules| rules.matched(path, is_dir));
+			if overridden == crate::ignore::Match::Ignore {
 				continue;
+			}
+			if overridden != crate::ignore::Match::Whitelist {
+				let ignored = self
+					.ignorer
+					.as_ref()
+					.map_or(crate::ignore::Match::None, |ignorer| {
+						ignorer.matched(frame.map(|frame| &**frame), path, is_dir, ign)
+					});
+				if ignored == crate::ignore::Match::Ignore
+					|| (ignored != crate::ignore::Match::Whitelist
+						&& !opts.hidden
+						&& name.first() == Some(&b'.'))
+				{
+					continue;
+				}
 			}
 			let mut entry = Entry { path, file_type, depth, size, mtime };
 			let mut worker = Worker { fs: &self.fs, root: &self.root, abs: &mut *abs };

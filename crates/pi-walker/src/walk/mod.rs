@@ -68,6 +68,10 @@ pub struct Options {
 	/// Honour `.ignore`, `.gitignore`, `.git/info/exclude`, and git's global
 	/// excludes ([`crate::ignore`]).
 	pub gitignore:         bool,
+	/// Apply git ignore rules only inside a Git repository (ripgrep default).
+	pub require_git:       bool,
+	/// Explicit glob overrides, evaluated before hidden and ignore rules.
+	pub overrides:         Option<Arc<crate::glob::Overrides>>,
 	/// Prune entries named `.git`.
 	pub skip_git:          bool,
 	/// Prune entries named `node_modules`.

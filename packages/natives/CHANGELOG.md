@@ -8,6 +8,7 @@
 - Added default-on native Cargo features and isolated Desktop builds; generic SDK and Bun CLI defaults retain the full native feature set.
 - Added binary capability reporting so integrations can distinguish disabled native features from the full default build.
 - Added isolated incremental Desktop development builds using the local Cargo profile without changing release capabilities or CPU baselines.
+- Added strict structured `searchFiles` with full-file scanning, per-occurrence UTF-16 highlight ranges, ripgrep-compatible ignore/glob selection, bounded streaming, global match budgets, cancellation, and timeouts.
 
 ### Fixed
 

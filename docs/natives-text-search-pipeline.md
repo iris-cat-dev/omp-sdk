@@ -20,6 +20,9 @@ Terminology follows `docs/natives-architecture.md`:
 - `crates/pi-walker/src/walk/cache.rs`
 - `crates/pi-walker/src/glob.rs`
 - `crates/pi-walker/src/grep/mod.rs`
+- `crates/pi-walker/src/grep/file_search.rs`
+- `crates/pi-walker/src/grep/scan.rs`
+- `crates/pi-walker/src/grep/engine.rs`
 - `crates/pi-natives/src/ast.rs`
 - `crates/pi-ast/src/ops.rs`
 - `crates/pi-natives/src/shell/vfs.rs`
@@ -35,6 +38,7 @@ Terminology follows `docs/natives-architecture.md`:
 | ------------------------------------------------------------------------------- | --------------------------------------- | -------------- |
 | `grep(options, onMatch?)`                                                       | `grep`                                  | `grep.rs`      |
 | `search(content, options)`                                                      | `search`                                | `grep.rs`      |
+| `searchFiles(options)`                                                         | `search_files`                          | `grep.rs`      |
 | `hasMatch(content, pattern, ignoreCase?, multiline?)`                           | `has_match`                             | `grep.rs`      |
 | `fuzzyFind(options)`                                                            | `fuzzy_find`                            | `fd.rs`        |
 | `glob(options, onMatch?)`                                                       | `glob`                                  | `glob.rs`      |
@@ -56,7 +60,7 @@ Terminology follows `docs/natives-architecture.md`:
 
 ## Pipeline overview by subsystem
 
-## 1) Regex search (`grep`, `search`, `hasMatch`)
+## 1) Text search (`grep`, `search`, `hasMatch`, `searchFiles`)
 
 ### Input/options flow
 
@@ -125,6 +129,32 @@ Batches flow through a bounded `tokio::sync::mpsc::Sender<Vec<Match>>` (each bat
 - This prevents common literal-template fragments (for example `${platform}`) from failing as malformed repetition.
 - A compile failure for an unclosed/unopened group triggers one targeted retry with unescaped parentheses escaped while preserving the rest of the regex.
 - If both engines still reject the pattern, the entire original pattern is escaped and searched literally.
+
+### Structured file content search (`searchFiles`)
+
+Use `searchFiles` for editor-style content search with exact occurrence counts and highlight positions:
+
+```ts
+import { searchFiles } from "@oh-my-pi/pi-natives";
+
+const result = await searchFiles({
+  path: workspaceRoot,
+  pattern: "render",
+  fixedStrings: true,
+  ignoreCase: true,
+  includeGlobs: ["*.ts", "*.tsx"],
+  excludeGlobs: ["*.test.ts"],
+});
+```
+
+- `Engine::compile_strict` compiles the Rust regex once. `fixedStrings` searches literal text; `ignoreCase` and `wholeWord` control matching. Invalid or unsupported regex syntax rejects without the agent APIs' repairs, PCRE2 fallback, or literal fallback.
+- `pi_walker::grep::search_files` shares the walker and `FileScanner`, streaming complete files rather than limiting large files to a 4 MiB prefix. Hidden files are excluded by default, repository ignore rules apply, and include/exclude globs use ripgrep overrides. Ignore files outside a Git repository do not apply. Unignored `node_modules` remains searchable.
+- Each `FileSearchMatch` contains a path, one-based `lineNumber`, source `line` without its CR/LF ending, and every non-overlapping occurrence as UTF-16 `{ start, length }` ranges. Zero-width matches retain length zero. Directory results use workspace-relative `/` paths; a direct-file result keeps its input path.
+- `totalMatches` counts occurrences, `filesWithMatches` counts matching files, and `filesSearched` counts scanned files. `maxMatches` reserves a shared atomic budget before allocating ranges; `limitReached` means that budget was exhausted.
+- `onMatches` delivers bounded batches during scanning with no file-order guarantee. Backpressure reaches the scanner, successful completion waits for the callbacks, and the returned `matches` array is empty. Without it, matches are collected and returned.
+- Invalid paths, file/directory read errors, callback errors, aborts, and timeouts reject. Already delivered batches may be retained as partial results; consumers must ignore callbacks arriving after cancellation or settlement.
+
+`grep`, `search`, and `hasMatch` retain their existing agent-oriented matching and result semantics.
 
 ## 2) File discovery (`glob`) and fuzzy path search (`fuzzyFind`)
 

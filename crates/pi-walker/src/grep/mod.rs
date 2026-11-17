@@ -28,6 +28,7 @@
 //! ```
 
 mod engine;
+mod file_search;
 mod render;
 mod run;
 mod scan;
@@ -38,6 +39,9 @@ mod types;
 use std::{fmt, io, path::Path, sync::Arc};
 
 pub use engine::{Engine, EngineError, pcre2_jit_enabled};
+pub use file_search::{
+	FileSearchMatch, FileSearchOptions, FileSearchRange, FileSearchResult, search_files,
+};
 use scan::{ScanParams, Scanner};
 
 use crate::{

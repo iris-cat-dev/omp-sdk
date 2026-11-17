@@ -110,6 +110,24 @@ pub fn pcre2_jit_enabled(setting: Option<&str>) -> bool {
 }
 
 impl Engine {
+	/// Compiles ripgrep's default Rust dialect, without agent pattern repairs
+	/// or PCRE2/literal fallbacks. Flags are applied by the native builder.
+	pub fn compile_strict(
+		pattern: &str,
+		ignore_case: bool,
+		fixed_strings: bool,
+		whole_word: bool,
+	) -> Result<RegexMatcher, String> {
+		RegexMatcherBuilder::new()
+			.case_insensitive(ignore_case)
+			.multi_line(true)
+			.line_terminator(Some(b'\n'))
+			.fixed_strings(fixed_strings)
+			.word(whole_word)
+			.build(pattern)
+			.map_err(|err| format!("Regex error: {err}"))
+	}
+
 	/// Compiles `pattern` in the agent dialect: braces that open no
 	/// repetition or braced escape are literal (`${x}`), then Rust `regex`
 	/// (line-terminated unless `multiline`), then PCRE2, then — after a group

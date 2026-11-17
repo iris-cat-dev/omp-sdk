@@ -218,6 +218,79 @@ pub struct GrepResult {
 	pub skipped_oversized:  Option<u32>,
 }
 
+/// Strict occurrence-oriented filesystem search, without agent regex repairs.
+#[napi(object, object_to_js = false)]
+pub struct FileSearchOptions<'env> {
+	pub path:          String,
+	pub pattern:       String,
+	pub ignore_case:   Option<bool>,
+	pub fixed_strings: Option<bool>,
+	pub whole_word:    Option<bool>,
+	pub include_globs: Option<Vec<String>>,
+	pub exclude_globs: Option<Vec<String>>,
+	/// Maximum occurrences scanned and delivered; absent means unlimited.
+	pub max_matches:   Option<u32>,
+	pub signal:        Option<Unknown<'env>>,
+	pub timeout_ms:    Option<u32>,
+	/// Stream bounded batches during scanning. Throws reject the search;
+	/// successful completion waits for every callback and returns no matches.
+	#[napi(ts_type = "(matches: FileSearchMatch[]) => void")]
+	pub on_matches:    Option<FileSearchCallback>,
+}
+
+type FileSearchCallback = ThreadsafeFunction<
+	Vec<FileSearchMatch>,
+	UnknownReturnValue,
+	Vec<FileSearchMatch>,
+	Status,
+	false,
+	false,
+>;
+
+/// One occurrence, in original-line UTF-16 code units; zero-width stays zero.
+#[napi(object)]
+pub struct FileSearchRange {
+	pub start:  f64,
+	pub length: f64,
+}
+
+/// Raw matching source line (only CR/LF removed), with every occurrence.
+#[napi(object)]
+pub struct FileSearchMatch {
+	pub path:        String,
+	pub line_number: f64,
+	pub line:        String,
+	pub ranges:      Vec<FileSearchRange>,
+}
+
+impl From<pi_walker::grep::FileSearchMatch> for FileSearchMatch {
+	fn from(value: pi_walker::grep::FileSearchMatch) -> Self {
+		Self {
+			path:        value.path,
+			line_number: value.line_number as f64,
+			line:        value.line,
+			ranges:      value
+				.ranges
+				.into_iter()
+				.map(|range| FileSearchRange {
+					start:  range.start as f64,
+					length: range.length as f64,
+				})
+				.collect(),
+		}
+	}
+}
+
+/// Occurrence counts across every searched file, or up to `maxMatches`.
+#[napi(object)]
+pub struct FileSearchResult {
+	pub matches:            Vec<FileSearchMatch>,
+	pub total_matches:      f64,
+	pub files_with_matches: f64,
+	pub files_searched:     f64,
+	pub limit_reached:      Option<bool>,
+}
+
 const fn to_mode(mode: Option<GrepOutputMode>) -> pi_walker::grep::Mode {
 	match mode {
 		None | Some(GrepOutputMode::Content) => pi_walker::grep::Mode::Content,
@@ -580,5 +653,101 @@ pub fn grep<'env>(
 	let filesystem = ShellFilesystem::resolve(filesystem);
 	task::filesystem_future(env, "grep", ct, filesystem, move |filesystem| {
 		grep_async(filesystem, request, on_matches, on_match)
+	})
+}
+
+async fn forward_file_matches(
+	callback: FileSearchCallback,
+	mut batches: mpsc::Receiver<Vec<pi_walker::grep::FileSearchMatch>>,
+) -> Result<()> {
+	let mut carry = None;
+	while let Some(first) = match carry.take() {
+		Some(batch) => Some(batch),
+		None => batches.recv().await,
+	} {
+		let mut batch: Vec<FileSearchMatch> = first.into_iter().map(FileSearchMatch::from).collect();
+		while let Ok(next) = batches.try_recv() {
+			if batch.len() + next.len() > STREAM_BATCH {
+				carry = Some(next);
+				break;
+			}
+			batch.extend(next.into_iter().map(FileSearchMatch::from));
+		}
+		callback.call_async_catch(batch).await?;
+	}
+	Ok(())
+}
+
+/// Search complete files with strict Rust regex and ripgrep's default glob,
+/// hidden and ignore policy. Abort/timeout reject after any delivered batches.
+#[napi]
+pub fn search_files<'env>(
+	env: &'env Env,
+	options: FileSearchOptions<'_>,
+) -> Result<PromiseRaw<'env, FileSearchResult>> {
+	let FileSearchOptions {
+		path,
+		pattern,
+		ignore_case,
+		fixed_strings,
+		whole_word,
+		include_globs,
+		exclude_globs,
+		max_matches,
+		signal,
+		timeout_ms,
+		on_matches,
+	} = options;
+	let ct = task::CancelToken::new(timeout_ms, signal);
+	let filesystem = ShellFilesystem::resolve(None);
+	task::filesystem_future(env, "searchFiles", ct, filesystem, move |filesystem| async move {
+		let matcher = Engine::compile_strict(
+			&pattern,
+			ignore_case.unwrap_or(false),
+			fixed_strings.unwrap_or(false),
+			whole_word.unwrap_or(false),
+		)
+		.map_err(Error::from_reason)?;
+		let root = pi_walker::fs::absolute(Path::new(&path))
+			.map_err(|err| Error::from_reason(format!("Failed to resolve cwd: {err}")))?;
+		let fs = pi_walker::Fs::new(&filesystem, &root);
+		let (sink, batches) = match on_matches {
+			Some(callback) => {
+				let (sender, receiver) = mpsc::channel(GREP_STREAM_QUEUE);
+				(Some(sender), Some((callback, receiver)))
+			},
+			None => (None, None),
+		};
+		let search = pi_walker::grep::search_files(&fs, &root, pi_walker::grep::FileSearchOptions {
+			matcher: Arc::new(matcher),
+			include_globs: include_globs.unwrap_or_default(),
+			exclude_globs: exclude_globs.unwrap_or_default(),
+			max_matches: max_matches.map(u64::from),
+			sink,
+		});
+		let result = match batches {
+			Some((callback, receiver)) => {
+				let (result, forwarded) =
+					tokio::join!(search, forward_file_matches(callback, receiver));
+				forwarded?;
+				result
+			},
+			None => search.await,
+		}
+		.map_err(|err| match err {
+			pi_walker::grep::GrepError::Walk(err) => task::walk_failure(err),
+			err => Error::from_reason(err.to_string()),
+		})?;
+		Ok(FileSearchResult {
+			matches:            result
+				.matches
+				.into_iter()
+				.map(FileSearchMatch::from)
+				.collect(),
+			total_matches:      result.total_matches as f64,
+			files_with_matches: result.files_with_matches as f64,
+			files_searched:     result.files_searched as f64,
+			limit_reached:      result.limit_reached.then_some(true),
+		})
 	})
 }

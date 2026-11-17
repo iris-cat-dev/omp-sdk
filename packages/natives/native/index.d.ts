@@ -580,6 +580,18 @@ export declare class RunTrace {
   present(options: ShellVizOptions): string
 }
 
+/** Pinned, bounded file namespace; unsupported platforms fail closed. */
+export declare class SandboxFs {
+  constructor(root: string, maxBytes?: number | undefined | null)
+  read(path: string, maxBytes?: number | undefined | null): Buffer
+  list(path: string): Array<SandboxEntry>
+  write(path: string, content: Buffer, exclusive?: boolean | undefined | null): void
+  stat(path: string): SandboxStat
+  mkdir(path: string): void
+  remove(path: string): void
+  close(): void
+}
+
 /** Persistent embedded bash engine (pi-shell) shell session. */
 export declare class Shell {
   /**
@@ -2091,6 +2103,49 @@ export interface ExtractSegmentsResult {
   afterWidth: number
 }
 
+/** Raw matching source line (only CR/LF removed), with every occurrence. */
+export interface FileSearchMatch {
+  path: string
+  lineNumber: number
+  line: string
+  ranges: Array<FileSearchRange>
+}
+
+/** Strict occurrence-oriented filesystem search, without agent regex repairs. */
+export interface FileSearchOptions {
+  path: string
+  pattern: string
+  ignoreCase?: boolean
+  fixedStrings?: boolean
+  wholeWord?: boolean
+  includeGlobs?: Array<string>
+  excludeGlobs?: Array<string>
+  /** Maximum occurrences scanned and delivered; absent means unlimited. */
+  maxMatches?: number
+  signal?: unknown
+  timeoutMs?: number
+  /**
+   * Stream bounded batches during scanning. Throws reject the search;
+   * successful completion waits for every callback and returns no matches.
+   */
+  onMatches?: (matches: FileSearchMatch[]) => void
+}
+
+/** One occurrence, in original-line UTF-16 code units; zero-width stays zero. */
+export interface FileSearchRange {
+  start: number
+  length: number
+}
+
+/** Occurrence counts across every searched file, or up to `maxMatches`. */
+export interface FileSearchResult {
+  matches: Array<FileSearchMatch>
+  totalMatches: number
+  filesWithMatches: number
+  filesSearched: number
+  limitReached?: boolean
+}
+
 /** Resolved filesystem entry kind for glob filters and match metadata. */
 export declare enum FileType {
   /** Regular file. */
@@ -3360,6 +3415,19 @@ export declare function renderMermaidAscii(text: string, options?: MermaidRender
  */
 export declare function renderSnapcompactPng(text: string, options: SnapcompactRenderOptions): Promise<string>
 
+export interface SandboxEntry {
+  name: string
+  isDirectory: boolean
+  size: number
+  modifiedAt: number
+}
+
+export interface SandboxStat {
+  isDirectory: boolean
+  size: number
+  modifiedAt: number
+}
+
 /**
  * Search content for a pattern (one-shot, compiles pattern each time).
  * For repeated searches with the same pattern, use [`grep`] with file filters.
@@ -3372,6 +3440,12 @@ export declare function renderSnapcompactPng(text: string, options: SnapcompactR
  * Match list plus counts/limit status; errors are surfaced in `error`.
  */
 export declare function search(content: string | Uint8Array, options: SearchOptions): SearchResult
+
+/**
+ * Search complete files with strict Rust regex and ripgrep's default glob,
+ * hidden and ignore policy. Abort/timeout reject after any delivered batches.
+ */
+export declare function searchFiles(options: FileSearchOptions): Promise<FileSearchResult>
 
 /** Options for searching file content. */
 export interface SearchOptions {

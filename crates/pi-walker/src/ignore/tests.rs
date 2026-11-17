@@ -247,7 +247,7 @@ async fn walk(fs: &Fs, root: &str) -> Vec<String> {
 		})
 	}
 	let mut s = fs.session();
-	let (ig, frame) = Ignorer::new(&mut s, fs, Path::new(root)).await;
+	let (ig, frame) = Ignorer::new(&mut s, fs, Path::new(root), false).await;
 	let dir = s.open_dir(Path::new(root)).await.unwrap();
 	let mut out = Vec::new();
 	visit(&mut s, &ig, &dir, b"", frame.as_ref(), &mut out).await;
@@ -393,15 +393,20 @@ async fn ancestor_anchored_rules_use_root_offset() {
 #[test]
 fn global_rules_apply_only_inside_repo_and_last() {
 	let global = Rules::parse(b"*.g\nsub/*.h\n");
-	let ig = Ignorer { global: Some(global), cwd: b"/w".to_vec(), root: b"/w/repo".to_vec() };
+	let ig = Ignorer {
+		global:      Some(global),
+		cwd:         b"/w".to_vec(),
+		root:        b"/w/repo".to_vec(),
+		require_git: false,
+	};
 	let repo = Frame::new(
 		None,
-		[None, Some(Arc::new(Rules::parse(b"!keep.g\n"))), None],
+		[None, Some(Arc::new(Rules::parse(b"!keep.g\n"))), None, None],
 		true,
 		Box::default(),
 		Box::default(),
 	);
-	let plain = Frame::new(None, [None, None, None], false, Box::default(), Box::default());
+	let plain = Frame::new(None, [None, None, None, None], false, Box::default(), Box::default());
 	let mut scratch = Vec::new();
 	assert!(ig.ignored(Some(&repo), b"x.g", false, &mut scratch));
 	assert!(!ig.ignored(Some(&repo), b"keep.g", false, &mut scratch));
