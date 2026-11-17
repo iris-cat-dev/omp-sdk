@@ -110,8 +110,16 @@ await runNodePluginCommand(Object.freeze(process.argv.slice(1)));`,
 			await Bun.write(
 				root.join("entry.cjs"),
 				`const { value } = require('./cdep.cjs');
-				module.exports = function () { globalThis.commonjsValues.push(value); };`,
+				const { readFileSync } = require('node:fs');
+				const { join } = require('node:path');
+				const { loadExtensions } = require('@earendil-works/pi-coding-agent');
+				module.exports = function () {
+					globalThis.commonjsValues.push(value);
+					globalThis.commonjsAssets.push({ asset: readFileSync(join(__dirname, 'asset.txt'), 'utf8'),
+						filename: __filename, host: loadExtensions === globalThis.hostLoader });
+				};`,
 			);
+			await Bun.write(root.join("asset.txt"), "real plugin asset");
 			await Bun.write(root.join("asset.ts"), "globalThis.sourceExecuted = true; export const value: number = 9;");
 			await Bun.write(root.join("data.json"), JSON.stringify({ value: 3 }));
 			await Bun.write(
@@ -122,9 +130,17 @@ await runNodePluginCommand(Object.freeze(process.argv.slice(1)));`,
 				import data from './data.json' with { type: 'json' };
 				import { loadExtensions as host } from '@oh-my-pi/pi-coding-agent';
 				import { loadExtensions as legacyHost } from '@mariozechner/pi-coding-agent';
+				import { Type } from 'typebox';
+				import { Type as sinclairType } from '@sinclair/typebox';
+				import { Type as legacyType } from '@mariozechner/pi-ai';
+				import { readFileSync } from 'node:fs';
+				import { fileURLToPath } from 'node:url';
 				export default function () {
 					globalThis.values.push({ value, commonjs: legacy.value, shared: legacy.shared,
-						host: host === globalThis.hostLoader && legacyHost === host, source, json: data.value });
+						host: host === globalThis.hostLoader && legacyHost === host, source, json: data.value,
+						typebox: Type === sinclairType && legacyType === Type,
+						asset: readFileSync(new URL('./asset.txt', import.meta.url), 'utf8'),
+						filename: fileURLToPath(import.meta.url) });
 				}`,
 			);
 			const result = await run(
@@ -133,12 +149,14 @@ await runNodePluginCommand(Object.freeze(process.argv.slice(1)));`,
 				globalThis.hostLoader = loadExtensions;
 				globalThis.values = [];
 				globalThis.commonjsValues = [];
+				globalThis.commonjsAssets = [];
 				const first = await loadExtensions(['./entry.mjs', './entry.cjs'], process.cwd());
 				writeFileSync('./dep.js', 'export const value = 2;');
 				writeFileSync('./cdep.cjs', 'module.exports = { value: 2 };');
 				const second = await loadExtensions(['./entry.mjs', './entry.cjs'], process.cwd());
 				console.log(JSON.stringify({ errors: [...first.errors, ...second.errors], values: globalThis.values,
-					commonjsValues: globalThis.commonjsValues, sourceExecuted: globalThis.sourceExecuted === true }));`,
+					commonjsValues: globalThis.commonjsValues, commonjsAssets: globalThis.commonjsAssets,
+					sourceExecuted: globalThis.sourceExecuted === true }));`,
 			);
 			expect(result.errors).toEqual([]);
 			expect(result.values).toEqual([
@@ -149,6 +167,9 @@ await runNodePluginCommand(Object.freeze(process.argv.slice(1)));`,
 					host: true,
 					source: await Bun.file(root.join("asset.ts")).text(),
 					json: 3,
+					typebox: true,
+					asset: "real plugin asset",
+					filename: fs.realpathSync(root.join("entry.mjs")),
 				},
 				{
 					value: 2,
@@ -157,10 +178,93 @@ await runNodePluginCommand(Object.freeze(process.argv.slice(1)));`,
 					host: true,
 					source: await Bun.file(root.join("asset.ts")).text(),
 					json: 3,
+					typebox: true,
+					asset: "real plugin asset",
+					filename: fs.realpathSync(root.join("entry.mjs")),
 				},
 			]);
 			expect(result.commonjsValues).toEqual([1, 2]);
+			expect(result.commonjsAssets).toEqual(
+				Array.from({ length: 2 }, () => ({
+					asset: "real plugin asset",
+					filename: fs.realpathSync(root.join("entry.cjs")),
+					host: true,
+				})),
+			);
 			expect(result.sourceExecuted).toBe(false);
+		});
+
+		test("keeps cached ESM and CommonJS tool graphs while using Node package conditions and shared host schemas", async () => {
+			using root = TempDir.createSync("@node-plugin-cached-tools-");
+			await Bun.write(
+				root.join("package.json"),
+				JSON.stringify({ type: "module", imports: { "#dependency": "fixture-dependency" } }),
+			);
+			const dependencyDir = root.join("node_modules", "fixture-dependency");
+			await Bun.write(
+				path.join(dependencyDir, "package.json"),
+				JSON.stringify({
+					name: "fixture-dependency",
+					type: "module",
+					exports: { bun: "./bun.js", import: "./import.js", require: "./require.cjs" },
+				}),
+			);
+			await Bun.write(path.join(dependencyDir, "bun.js"), "throw new Error('selected Bun-only package condition');");
+			await Bun.write(
+				path.join(dependencyDir, "import.js"),
+				"globalThis.moduleLoads.import++; export const value = 'import:1';",
+			);
+			await Bun.write(
+				path.join(dependencyDir, "require.cjs"),
+				"globalThis.moduleLoads.require++; module.exports = { value: 'require:1' };",
+			);
+			await Bun.write(
+				root.join("tool.mjs"),
+				`import { value } from '#dependency';
+				import { Type } from '@sinclair/typebox';
+				globalThis.moduleLoads.esm++;
+				export default function (api) {
+					globalThis.factories.push({ value, host: Type === api.typebox.Type });
+					return { name: 'esm-tool', description: value, parameters: Type.Object({}),
+						execute() { return { content: [{ type: 'text', text: value }] }; } };
+				}`,
+			);
+			await Bun.write(
+				root.join("tool.cjs"),
+				`const { value } = require('#dependency');
+				const { Type } = require('@mariozechner/pi-ai');
+				globalThis.moduleLoads.cjs++;
+				module.exports = function (api) {
+					globalThis.factories.push({ value, host: Type === api.typebox.Type });
+					return { name: 'cjs-tool', description: value, parameters: Type.Object({}),
+						execute() { return { content: [{ type: 'text', text: value }] }; } };
+				};`,
+			);
+			const result = await run(
+				root,
+				`import { writeFileSync } from 'node:fs';
+				globalThis.moduleLoads = { esm: 0, cjs: 0, import: 0, require: 0 };
+				globalThis.factories = [];
+				const paths = [{ path: './tool.mjs' }, { path: './tool.cjs' }];
+				const first = await loadCustomTools(paths, process.cwd(), []);
+				writeFileSync('./node_modules/fixture-dependency/import.js', "export const value = 'import:2';");
+				writeFileSync('./node_modules/fixture-dependency/require.cjs', "module.exports = { value: 'require:2' };");
+				const second = await loadCustomTools(paths, process.cwd(), []);
+				const outputs = await Promise.all([...first.tools, ...second.tools].map(t => t.tool.execute()));
+				console.log(JSON.stringify({ errors: [...first.errors, ...second.errors],
+					factories: globalThis.factories, moduleLoads: globalThis.moduleLoads, outputs }));`,
+			);
+			expect(result.errors).toEqual([]);
+			expect(result.moduleLoads).toEqual({ esm: 1, cjs: 1, import: 1, require: 1 });
+			expect(result.factories).toEqual([
+				{ value: "import:1", host: true },
+				{ value: "require:1", host: true },
+				{ value: "import:1", host: true },
+				{ value: "require:1", host: true },
+			]);
+			expect(result.outputs).toEqual(
+				["import:1", "require:1", "import:1", "require:1"].map(text => ({ content: [{ type: "text", text }] })),
+			);
 		});
 
 		test("rejects source plugins and transitive import/require dependencies without executing them", async () => {

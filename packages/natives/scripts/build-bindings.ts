@@ -329,6 +329,7 @@ try {
 			"snapcompact",
 			"audio",
 			"localAssistance",
+			"syntaxHighlighting",
 		] as const;
 		for (const capability of disabledCapabilities) {
 			if (capabilities?.[capability] !== false) {
@@ -352,6 +353,11 @@ try {
 			"appleFmAvailability",
 			"appleFmGenerate",
 			"appleFmCancel",
+			"highlightCode",
+			"warmHighlighter",
+			"HighlightStream",
+			"supportsLanguage",
+			"getSupportedLanguages",
 		];
 		for (const name of removedExports) {
 			if (name in bindings) {

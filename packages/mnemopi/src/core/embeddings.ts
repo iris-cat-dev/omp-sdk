@@ -1,6 +1,4 @@
 import { mkdirSync } from "node:fs";
-import * as fsp from "node:fs/promises";
-import * as nodePath from "node:path";
 import { type ApiKey, getOpenRouterHeaders, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
@@ -15,7 +13,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { EmbeddingModel } from "fastembed";
-import { loadFastembed, withEmbedSessionBudget } from "./fastembed-runtime";
+import { defaultLocalModelInitializer } from "#mnemopi-local-embedding-runtime";
 import {
 	type EmbeddingOutput,
 	getMnemopiRuntimeOptions,
@@ -24,8 +22,11 @@ import {
 } from "./runtime-options";
 import { clipToWindow, DEFAULT_INPUT_CHARS } from "./text-window";
 
+declare const __OMP_CORE_SDK__: boolean;
+
 export type { EmbeddingOutput } from "./runtime-options";
 export { cosineSimilarity } from "./vector-math";
+export { defaultLocalModelInitializer, quarantineCorruptModelFile } from "#mnemopi-local-embedding-runtime";
 
 export type Vector = Float32Array;
 export type EmbeddingMatrix = Vector[];
@@ -64,63 +65,6 @@ const queryCache = new LRUCache<string, Vector>({ max: QUERY_CACHE_MAX });
 // collide on the same query text. `0` is the sentinel for "env-default fallback".
 const providerIds = new WeakMap<object, number>();
 let nextProviderId = 1;
-
-/**
- * Quarantine the exact ONNX file named by a "Protobuf parsing failed" init
- * error. A truncated cached model blocks local embeddings forever: the
- * downloader treats the existing file as complete, so every init re-parses
- * the same broken bytes. The extracted path is error-message CONTENT, so it
- * is only honored when it resolves inside the fastembed cache directory —
- * never rename an arbitrary file a dependency happens to mention. Atomic
- * rename; losing a concurrent-heal race (file already renamed/removed)
- * still returns true because a retry is safe either way.
- * @internal exported for tests
- */
-export async function quarantineCorruptModelFile(message: string, cacheDir?: string): Promise<boolean> {
-	const match = /Load model from (.+?\.onnx) failed:.*Protobuf parsing failed/i.exec(message);
-	if (!match) return false;
-	const modelFile = nodePath.resolve(match[1]);
-	const cacheRoot = nodePath.resolve(cacheDir ?? getFastembedCacheDir());
-	if (!modelFile.startsWith(cacheRoot + nodePath.sep)) return false;
-	try {
-		await fsp.rename(modelFile, `${modelFile}.corrupt-${Date.now()}`);
-		logger.warn("mnemopi: quarantined corrupt local embedding model; retrying init", { modelFile });
-	} catch {
-		// Concurrent heal or vanished file: the single retry stays safe. A
-		// rename that failed with the file still in place just makes the
-		// retry surface the original error again.
-	}
-	return true;
-}
-
-/**
- * Shared local-model initializer: FlagEmbedding.init with a corrupt-cache heal.
- * A corrupt model blob (Protobuf parse failure) quarantines the file and
- * retries once; fastembed re-downloads any file missing from the model's
- * cache directory. Also the initializer the embed worker uses in its
- * subprocess; the in-process seam stays {@link setLocalModelInitializer}.
- *
- * The ONNX sessions fastembed builds here from the model cache carry the
- * embedding thread budget ({@link withEmbedSessionBudget}); it is off again by
- * the time this returns, and never touches a session built from anywhere else,
- * so a consumer sharing the same onnxruntime copy keeps its own defaults.
- */
-export async function defaultLocalModelInitializer(options: LocalModelInitOptions): Promise<LocalEmbeddingModel> {
-	const cacheDir = options.cacheDir ?? getFastembedCacheDir();
-	const initOptions = options.cacheDir === undefined ? { ...options, cacheDir } : options;
-	const { FlagEmbedding } = await loadFastembed();
-	return withEmbedSessionBudget(cacheDir, async () => {
-		try {
-			return await FlagEmbedding.init(initOptions);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "";
-			if (/Protobuf parsing failed/i.test(message) && (await quarantineCorruptModelFile(message, cacheDir))) {
-				return FlagEmbedding.init(initOptions);
-			}
-			throw error;
-		}
-	});
-}
 
 function activeEmbeddingOptions() {
 	return getMnemopiRuntimeOptions()?.embeddings;
@@ -477,6 +421,7 @@ export async function available(): Promise<boolean> {
 		}
 		return embeddingKeyConfigured();
 	}
+	if (typeof __OMP_CORE_SDK__ !== "undefined" && __OMP_CORE_SDK__) return false;
 	if (inTestRuntime()) {
 		return false;
 	}
@@ -526,6 +471,11 @@ export async function embed(texts: readonly string[]): Promise<EmbeddingMatrix |
 	}
 	if (isApiModel(defaultModel())) {
 		return embedApi(texts);
+	}
+	if (typeof __OMP_CORE_SDK__ !== "undefined" && __OMP_CORE_SDK__) {
+		throw new Error(
+			"Local memory embeddings are unavailable in the core Node SDK profile. Configure remote embeddings or use the full SDK profile.",
+		);
 	}
 	if (texts.length === 1) {
 		const key = queryCacheKey(texts[0] ?? "");

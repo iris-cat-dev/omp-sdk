@@ -5,7 +5,7 @@ import { PARENT_WATCHDOG_WORKER_ARG } from "../cli/worker-selectors";
 /**
  * SIGKILL this process once `parentPid` exits or this process is reparented.
  *
- * Called by `runIpcSubprocessWorker` (cli.ts) for every IPC subprocess worker.
+ * Called by `runIpcSubprocessWorker` (`./ipc-worker-host`) for every IPC subprocess worker.
  * Liveness is polled on a dedicated worker thread rather than the main event
  * loop: inference workers pin their main thread inside synchronous native calls
  * (onnxruntime `session.run`) for minutes at a time, and a main-loop watchdog

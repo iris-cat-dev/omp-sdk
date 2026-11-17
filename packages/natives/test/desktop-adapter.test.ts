@@ -52,6 +52,22 @@ describe("desktop native ABI requirements", () => {
 		const Stale = adaptDesktopSession({ prototype: prototype(false) });
 		expect(() => new Stale({ display: "active" })).toThrow(/^Unsupported: .*\(missing escapeStops\)/);
 	});
+
+	it("rejects native highlighting exports that contradict the capability report", () => {
+		const bindings = { nativeCapabilities: () => ({ syntaxHighlighting: false }) };
+		const ctx = { isWorkspaceLoad: true, packageVersion: "18.14.0" };
+		for (const name of [
+			"highlightCode",
+			"warmHighlighter",
+			"HighlightStream",
+			"supportsLanguage",
+			"getSupportedLanguages",
+		]) {
+			expect(() =>
+				loaderState.validateLoadedBindings(ctx, { ...bindings, [name]: () => {} }, "desktop.node"),
+			).toThrow(`syntaxHighlighting capability/export contract: ${name}`);
+		}
+	});
 });
 
 describe("lazy desktop exports", () => {

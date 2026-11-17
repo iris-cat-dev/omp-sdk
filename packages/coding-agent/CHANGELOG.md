@@ -30,6 +30,9 @@
 
 - Reduced standalone binary size by disabling bundled bytecode, trading faster startup for smaller executables.
 - Reduced the packaged Node SDK footprint while retaining browser, code-parsing, and ordinary image capabilities.
+- Core Node SDK builds now exclude offline worker/client JavaScript, model downloaders, local embedding initialization, and MLX scripts through compile-time module boundaries; `--profile=core|full` retains remote services, shared worker IPC/inbox behavior, and the original full SDK/Bun client exports, helper bindings, and lifecycle.
+- Node SDK builds now exclude Bun-only plugin loading/rewrite code while preserving JavaScript ESM/CJS host aliases, module identity, reloads, and adjacent resources; Bun CLI loading is unchanged.
+- Staged Koffi now contains only runtime entries, target addons, and licenses, omitting source, documentation, types, and build configuration.
 - Desktop packaging now validates an isolated native addon and excludes full-native platform leaf packages, while generic SDK and Bun CLI defaults retain full native features.
 - Source SDK builds now reuse unchanged artifacts and dependency file lists, with uncompressed development staging kept separate from validated release archives.
 - Node SDK plugins, custom tools/commands, and eval now execute JavaScript only, removing the runtime TypeScript compiler dependency; TS/TSX/JSX extensions must be precompiled. Bun CLI TypeScript support and source-file read/write/edit remain unchanged.
@@ -41,6 +44,8 @@
 
 ### Fixed
 
+- Fixed core Node SDK artifacts failing to load directly from unmarked source checkouts; staged packages still require a matching profile marker.
+- Fixed Node CommonJS extensions failing to require shared host package aliases resolved to file URLs.
 - Fixed sandbox sessions failing to start on Windows; secure file access now supports local drive directories without disabling isolation.
 - Fixed Cursor native edits and exclusive MCP calls racing adjacent shell and read calls, so checks after an edit observe the changed file ([#18434](https://github.com/can1357/oh-my-pi/pull/18434) by [@KadirBerkpolat1](https://github.com/KadirBerkpolat1), [#18502](https://github.com/can1357/oh-my-pi/pull/18502) by [@eggpeat](https://github.com/eggpeat)).
 - Fixed custom API model definitions and overrides dropping service-tier declarations, preventing eligible GPT models from using Ultrafast ([#3](https://github.com/iris-cat-dev/omp-sdk/pull/3) by [@Charlie-chulong](https://github.com/Charlie-chulong)).

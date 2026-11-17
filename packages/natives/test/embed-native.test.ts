@@ -1,12 +1,71 @@
 import { describe, expect, it } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { embeddedAddonFiles } from "../scripts/embed-native";
 import packageJson from "../package.json" with { type: "json" };
 import { type EmbeddedAddon, extractEmbeddedAddons } from "../native/loader-state.js";
+import { detectHostAvx2Support, resolveLocalHostAddon } from "../../../scripts/host-detect";
+
+const desktopNativeDir = path.resolve(import.meta.dir, "../native/desktop");
+const hostAddon = resolveLocalHostAddon({
+	platform: process.platform,
+	arch: process.arch,
+	avx2: detectHostAvx2Support(),
+});
+const desktopAddon = fsSync.existsSync(path.join(desktopNativeDir, hostAddon.filename))
+	? hostAddon
+	: resolveLocalHostAddon({ platform: process.platform, arch: process.arch, avx2: false });
 
 describe("native addon embedding", () => {
+	it.skipIf(!fsSync.existsSync(path.join(desktopNativeDir, desktopAddon.filename)))(
+		"loads the actual Desktop addon without TUI highlighting while preserving AST consumers",
+		async () => {
+			const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-natives-desktop-highlight-"));
+			try {
+				const embedded = await embeddedAddonFiles({
+					platform: process.platform,
+					arch: process.arch,
+					nativeDir: desktopNativeDir,
+					version: packageJson.version,
+				});
+				const manifestDir = path.resolve(import.meta.dir, "../native");
+				const files: Record<string, string | Uint8Array> = {};
+				for (const file in embedded) files[path.join(manifestDir, path.basename(file))] = embedded[file];
+				const binary = path.join(root, process.platform === "win32" ? "probe.exe" : "probe");
+				const build = await Bun.build({
+					entrypoints: [path.join(import.meta.dir, "fixtures/desktop-highlight-probe.ts")],
+					root: path.resolve(import.meta.dir, "../../.."),
+					target: "bun",
+					format: "esm",
+					files,
+					compile: { outfile: binary, autoloadBunfig: false, autoloadDotenv: false },
+				});
+				if (!build.success) throw new AggregateError(build.logs, "Desktop highlighting probe failed to compile");
+				const child = Bun.spawn([binary], {
+					env: {
+						...process.env,
+						PI_NATIVES_DIR: path.join(root, "cache"),
+						PI_NATIVE_VARIANT: desktopAddon.x64Variant ?? "",
+					},
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [stdout, stderr, exitCode] = await Promise.all([
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+					child.exited,
+				]);
+				if (exitCode !== 0) throw new Error(`Desktop highlighting probe exited ${exitCode}: ${stderr}`);
+				expect(stdout.trim()).toBe("desktop highlighting boundary ok");
+			} finally {
+				await fs.rm(root, { recursive: true, force: true });
+			}
+		},
+		60_000,
+	);
+
 	for (const [label, contents] of [
 		["a longer release stamp that starts with the expected version", `binaryPI_NATIVES_VERSION_STAMP:18.1.10\0\0`],
 		["a longer legacy sentinel export that starts with the expected version", "binary__piNativesV18_1_10\0"],

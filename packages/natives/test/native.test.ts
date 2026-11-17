@@ -17,6 +17,7 @@ import {
 	grep,
 	HighlightStream,
 	highlightCode,
+	nativeCapabilities,
 	htmlToMarkdown,
 	listWorkspace,
 	macOSCheckSpelling,
@@ -31,6 +32,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
+	warmHighlighter,
 } from "../native/index.js";
 
 const addonUrl = new URL("../native/index.js", import.meta.url).href;
@@ -230,7 +232,9 @@ describe("pi-natives", () => {
 			expect(supportsLanguage("elisp")).toBe(true);
 		});
 
-		it("highlights Julia via the vendored syntax", () => {
+		it("highlights Julia via the vendored syntax", async () => {
+			expect(nativeCapabilities().syntaxHighlighting).toBe(true);
+			await warmHighlighter();
 			// Julia is not in syntect's defaults; its syntax is vendored and folded
 			// into the set. Assert it is actually present, not merely aliased — an
 			// alias alone would let supportsLanguage report true while highlightCode

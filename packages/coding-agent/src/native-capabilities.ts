@@ -10,6 +10,7 @@ export interface NativeCapabilities {
 	readonly snapcompact: boolean;
 	readonly audio: boolean;
 	readonly localAssistance: boolean;
+	readonly syntaxHighlighting: boolean;
 }
 
 const capabilityNames: readonly (keyof NativeCapabilities)[] = [
@@ -21,6 +22,7 @@ const capabilityNames: readonly (keyof NativeCapabilities)[] = [
 	"snapcompact",
 	"audio",
 	"localAssistance",
+	"syntaxHighlighting",
 ];
 
 let compiledCapabilities: NativeCapabilities | undefined;

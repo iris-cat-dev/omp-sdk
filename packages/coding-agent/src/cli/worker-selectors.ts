@@ -25,3 +25,23 @@ export const STATS_ACTIVITY_WORKER_ARG = "__omp_worker_stats_activity";
 export const TEXT_PREDICT_WORKER_ARG = "__omp_worker_text_predict";
 /** Terminal-output selector shared by the CLI dispatcher and worker launcher. */
 export const TERMINAL_OUTPUT_WORKER_ARG = "__omp_worker_terminal_output";
+
+/** Offline inference selectors; this module never imports their runtimes. */
+export const TINY_WORKER_ARG = "__omp_worker_tiny_inference";
+export const STT_WORKER_ARG = "__omp_worker_stt";
+export const TTS_WORKER_ARG = "__omp_worker_tts";
+export const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
+
+export const OFFLINE_WORKER_FEATURES = {
+	[TINY_WORKER_ARG]: "Tiny local helper inference",
+	[STT_WORKER_ARG]: "Offline speech recognition",
+	[TTS_WORKER_ARG]: "Offline speech synthesis",
+	[MNEMOPI_EMBED_WORKER_ARG]: "Local memory embeddings",
+	[MNEMOPI_EMBED_SERVER_WORKER_ARG]: "Local memory embeddings",
+} as const;
+
+export type OfflineWorkerSelector = keyof typeof OFFLINE_WORKER_FEATURES;
+
+export function isOfflineWorkerSelector(arg: string | undefined): arg is OfflineWorkerSelector {
+	return arg !== undefined && Object.hasOwn(OFFLINE_WORKER_FEATURES, arg);
+}

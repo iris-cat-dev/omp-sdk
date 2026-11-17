@@ -104,10 +104,9 @@ function buildGeneratedBlock(dts: string): string {
 		if (lines.length > 0) lines.push("");
 		lines.push("// functions");
 		for (const name of functions) {
-			// `missingNativeExport` returns `undefined` on a current addon and a
-			// throwing stub on a stale one, so capability probes
-			// (`typeof native.x === "function"`) keep their meaning and only the
-			// stale case gains an actionable failure. See `loader-state.js`.
+			// `missingNativeExport` diagnoses stale addons and explicitly disabled
+			// syntax highlighting. Other absent exports on a current addon stay
+			// `undefined` for capability probes. See `loader-state.js`.
 			const fallback = RELEASE_IDENTITY_NAME_RE.test(name) ? "" : ` ?? missingNativeExport("${name}")`;
 			lines.push(`export const ${name} = nativeBindings.${name}${fallback};`);
 		}

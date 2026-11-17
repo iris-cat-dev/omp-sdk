@@ -99,11 +99,15 @@ Normal native builds, the generic SDK, and the Bun CLI retain them all:
 - `audio` includes microphone capture and speaker playback.
 - `local-assistance` includes ngram/macOS prediction, macOS spelling, and Apple
   Foundation Models.
+- `syntax-highlighting` includes syntect grammars, ANSI code highlighting, and
+  the stateful TUI highlighter.
 
 The Desktop target disables all of these features, independently of the
 JavaScript `core`/`full` profile. File editing, search, Git, Shell, ordinary
-images, and built-in code parsing remain available. Browser PDF screenshots
-and printing do not depend on the native PDF extractor.
+images, and built-in code parsing remain available. OMP Desktop retains its
+independent Lezer code-block/editor highlighter; SDK TUI highlighting requires
+the full native addon. Browser PDF screenshots and printing do not depend on
+the native PDF extractor.
 
 From the workspace root:
 
@@ -124,7 +128,7 @@ validates the isolated addon's version, SHA-256, and raw capability report
 against its sidecar before packaging it.
 
 `nativeCapabilities()` reports the loaded binary's `smollm`, `liveVoice`,
-`wasmGrammars`, `pdf`, `jujutsu`, `snapcompact`, `audio`, and `localAssistance`
+`wasmGrammars`, `pdf`, `jujutsu`, `snapcompact`, `audio`, `localAssistance`, and `syntaxHighlighting`
 facts; declarations do not imply that an optional feature is enabled. The SDK
 exposes a validated, immutable report through `readNativeCapabilities()`.
 Disabled-feature operations fail before downloads or native construction.
@@ -133,7 +137,6 @@ remain readable without generating new frames. A caller-owned WebRTC peer can
 still supply an SDP offer and use signaling without native WebRTC or local audio.
 
 These native features are separate from the SDK's JavaScript `core` profile.
-No measured Desktop size savings are claimed here.
 
 ## Architecture
 

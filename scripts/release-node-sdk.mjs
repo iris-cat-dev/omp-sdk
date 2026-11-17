@@ -71,8 +71,8 @@ export function validateNodeSdkArchive(file, config, target) {
   const runtime = archiveJson(file, "package/dist/node/runtime-dependencies.json");
   if (sdk.name !== config.packageName || sdk.version !== config.version ||
       sdk.ompNodeSdk?.target !== config.buildTarget || sdk.ompNodeSdk?.profile !== config.profile ||
-      modules.version !== 1 || modules.buildTarget !== config.buildTarget ||
-      runtime.version !== 1 || runtime.buildTarget !== config.buildTarget)
+      modules.version !== 1 || modules.buildTarget !== config.buildTarget || modules.profile !== config.profile ||
+      runtime.version !== 1 || runtime.buildTarget !== config.buildTarget || runtime.profile !== config.profile)
     throw new Error(`Incompatible SDK archive metadata for ${target}.`);
   const members = new Set(tar(file, "-tzf").trim().split("\n"));
   const nativePrefix = "package/node_modules/@oh-my-pi/pi-natives/native/pi_natives.";
@@ -152,15 +152,15 @@ export function nodeSdkReleaseNotes(config, index) {
     `- \`${target}\`: \`${asset.asset}\` (${asset.size} bytes), SHA-256 \`${asset.sha256}\``).join("\n");
   return `# Node SDK ${config.version} — Desktop core / 桌面核心版\n\n` +
     `## 中文\n\n` +
-    `- Desktop 远程后端可使用独立的、按目标平台分发的 Node SDK，无需安装 Bun。压缩包包含完整工作器、模块和资源，以及 core 配置。\n` +
+    `- Desktop 远程后端可使用独立的、按目标平台分发的 Node SDK，无需安装 Bun。压缩包包含 core 工作器、模块和资源。\n` +
     `- 需要 Node.js >= ${config.minimumNodeVersion}；支持 macOS x64/arm64 与 Linux glibc x64/arm64。x64 使用现有 x86-64-v2 baseline，不要求 AVX2 modern 指令集。Windows 和 musl 主机不受支持。\n` +
-    `- 保留远程/API 模型、原生文件与 Shell 工具、浏览器、RPC 和会话持久化。不包含本地模型推理、本地向量模型、离线语音，以及原生 PDF、Jujutsu、音频和本地辅助功能。\n` +
+    `- 保留远程/API 模型、原生文件与 Shell 工具、浏览器、RPC 和会话持久化。不包含本地模型推理、本地向量模型、离线语音，以及原生 PDF、Jujutsu、音频、本地辅助和 syntect TUI 高亮；Desktop 的 Lezer 高亮不受影响。\n` +
     `- 四个安装用 npm 压缩包均携带对应平台的真实原生依赖；索引记录每个文件的名称、大小、SHA-256 与 SHA-512 完整性。SDK npm 版本仍为 ${config.version}，这不是 npm 或上游 CLI/二进制发布。\n` +
     `- 正式发布前必须核对索引与全部四个平台资产。Desktop 固定使用 \`${config.repository}@${config.tag}\`，不会回退到 latest 或本机 SDK。\n\n` +
     `## English\n\n` +
-    `- Desktop remote backends can use standalone, target-specific Node SDK assets without installing Bun. Archives include the complete worker, module and resource graph with the core profile.\n` +
+    `- Desktop remote backends can use standalone, target-specific Node SDK assets without installing Bun. Archives include the core worker, module and resource graph.\n` +
     `- Requires Node.js >= ${config.minimumNodeVersion}. Supports macOS x64/arm64 and Linux glibc x64/arm64. x64 uses the existing x86-64-v2 baseline, not the AVX2-only modern addon. Windows and musl hosts are unsupported.\n` +
-    `- Remote/API models, native file and Shell tools, browser support, RPC and saved sessions remain available. Local model inference, local embeddings, offline speech, and native PDF, Jujutsu, audio and local assistance are not included.\n` +
+    `- Remote/API models, native file and Shell tools, browser support, RPC and saved sessions remain available. Local model inference, local embeddings, offline speech, and native PDF, Jujutsu, audio, local assistance and syntect TUI highlighting are not included; Desktop's Lezer highlighting is unchanged.\n` +
     `- All four installable npm archives include their real matching native dependencies. The index records each asset's name, byte size, SHA-256 and SHA-512 integrity. The SDK npm version remains ${config.version}; this is not an npm or upstream CLI/binary release.\n` +
     `- Review the index and all four platform assets before publication. Desktop pins \`${config.repository}@${config.tag}\`; there is no latest or local-SDK fallback.\n\n` +
     `## Assets / 资产\n\n${inventory}\n\n**完整更新记录 / Full changelog**: https://github.com/${config.repository}/commits/${config.tag}/\n`;

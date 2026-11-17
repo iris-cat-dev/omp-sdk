@@ -23,6 +23,7 @@ use zlib_rs as _;
 
 fn main() {
 	napi_build::setup();
+	#[cfg(feature = "syntax-highlighting")]
 	build_syntax_set();
 	build_oauth_callback_helper();
 	if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
@@ -52,9 +53,11 @@ fn main() {
 	}
 }
 
+#[cfg(feature = "syntax-highlighting")]
 #[path = "src/syntaxes/builder.rs"]
 mod syntax_set_builder;
 
+#[cfg(feature = "syntax-highlighting")]
 fn build_syntax_set() {
 	let manifest_dir =
 		PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"));
