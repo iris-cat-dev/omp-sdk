@@ -190,7 +190,7 @@ bazelisk --bazelrc="$rc" test //crates/...                 # full Rust suite
 # lint policy via a query kind filter:
 bazelisk query "kind('rust_library|rust_shared_library', //crates/pi-ast/... + //crates/pi-diff/... + //crates/pi-edit/... + //crates/pi-iso/... + //crates/pi-natives/... + //crates/pi-shell/... + //crates/pi-vcs/... + //crates/pi-voice/... + //crates/pi-walker/...)" \
   | xargs bazelisk --bazelrc="$rc" build --config=clippy-strict --
-bazelisk query "kind('rust_library|rust_shared_library', //crates/... - (…strict set…) - //crates/vendor/brush-core/... - //crates/pi-builtins/...)" \
+bazelisk query "kind('rust_library|rust_shared_library', //crates/... - (…strict set…) - //crates/pi-builtins/...)" \
   | xargs bazelisk --bazelrc="$rc" build --config=clippy --
 bazelisk query "kind('rust_library|rust_shared_library', //crates/pi-builtins/...)" \
   | xargs bazelisk --bazelrc="$rc" build --config=clippy-ported --
@@ -256,7 +256,7 @@ bazelisk build --nobuild //:natives-win32-x64-baseline
 | win32 link oddities generally                                                      | —                                                                                                          | read `bazel/toolchains/msvc/NOTES.md` first: wrapper self-location, `lld-link` flavor/driver-link behavior, `LIB`, `/MT` static CRT choice, xwin splat caveats |
 | `rust_test(crate = ...)` "can't find crate" at macro expansion                     | rmeta-only pipelined deps break macro_rules re-export harness compiles                                     | rust pipelined_compilation stays OFF (`.bazelrc` note)                                                                                                         |
 | build script can't find cmake/ninja                                                | `--incompatible_strict_action_env` — no host env leaks                                                     | explicit `PATH` in the crate annotation (`MODULE.bazel`), not host env                                                                                         |
-| build script can't find a dependency's generated headers (`wasm.h` in tree-sitter) | rules_rust 0.71.3 writes `DEP_<links>_*` out_dir paths with an `${out_dir}` token dependents never resolve | `bazel/patches/rules_rust-dep-env-exec-root-paths.patch` (`single_version_override` in `MODULE.bazel`) keeps them exec-root relative                           |
+| build script can't find a dependency's generated headers (`wasm.h` in tree-sitter) | rules*rust 0.71.3 writes `DEP*<links>\_\*`out_dir paths with an`${out_dir}` token dependents never resolve | `bazel/patches/rules_rust-dep-env-exec-root-paths.patch` (`single_version_override` in `MODULE.bazel`) keeps them exec-root relative                           |
 
 ### Cache behavior
 
@@ -350,7 +350,7 @@ Generated declarations currently include exports from these Rust modules:
 | Search/workspace       | `grep`, `search`, `hasMatch`, `fuzzyFind`, `glob`, `listWorkspace`                                                                 | `grep.rs`, `fd.rs`, `glob.rs`, `workspace.rs` (walk/search in `pi-walker`)   |
 | AST/block/summary      | `astGrep`, `astEdit`, `blockRangeAt`, `summarizeCode`                                                                              | `ast.rs`, `block.rs`, `summary.rs`                                           |
 | Text/highlight/tokens  | `visibleWidth`, `truncateToWidth`, `highlightCode`, `countTokens`                                                                  | `text.rs`, `highlight.rs`, `tokens.rs`                                       |
-| Shell/PTY/process/keys | `executeShell`, `Shell`, `PtySession`, `Process`, `parseKey`                                                                       | `shell.rs`, `pty.rs`, `ps.rs`, `keys.rs`                                     |
+| Shell/PTY/process/keys | `executeShell`, `Shell`, `RunTrace`, `ShellVisualization`, `shellBuiltins`, `PtySession`, `Process`, `parseKey`                    | `shell.rs`, `pty.rs`, `ps.rs`, `keys.rs`                                     |
 | Media/system/iso       | `encodeSixel`, `copyToClipboard`, `detectMacOSAppearance`, `PowerAssertion`, `getWorkProfile`, `isoBackend`, `isoStart`, `isoDiff` | `sixel.rs`, `clipboard.rs`, `appearance.rs`, `power.rs`, `prof.rs`, `iso.rs` |
 
 ## Failure behavior and diagnostics

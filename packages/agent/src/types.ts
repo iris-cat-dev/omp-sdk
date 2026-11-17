@@ -1039,6 +1039,17 @@ export interface AgentToolResult<T = any, _TInput = unknown> {
 	useless?: boolean;
 }
 
+/** A throwing tool may retain its execution metadata without changing error/abort semantics. */
+export class AgentToolError<T = unknown> extends Error {
+	constructor(
+		message: string,
+		options?: ErrorOptions,
+		readonly details?: T,
+	) {
+		super(message, options);
+	}
+}
+
 // Callback for streaming tool execution updates
 export type AgentToolUpdateCallback<T = any, TInput = unknown> = (partialResult: AgentToolResult<T, TInput>) => void;
 

@@ -8,10 +8,14 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 - `crates/pi-natives/src/shell/vfs.rs` (host-injected filesystem bridge)
 - `crates/pi-vfs/` (shared filesystem abstraction)
 - `crates/pi-shell/src/shell.rs`
+- `crates/pi-shell/src/bash/` (parser, VM, language builtins and trace)
+- `crates/pi-shell/src/session.rs` (persistent step-driven session)
+- `crates/pi-shell/src/host.rs` (embedded host and stream/process adaptation)
+- `crates/pi-shell/src/tools/` (utility and host callouts)
 - `crates/pi-shell/src/cancel.rs`
-- `crates/pi-builtins` (embedded-shell builtins: bash builtins plus in-process utility/process commands)
+- `crates/pi-builtins` (in-process utility and process commands)
 - `crates/pi-shell/src/windows.rs` (Windows-only PATH enrichment)
-- `crates/pi-shell/src/process.rs`
+- `crates/pi-shell/src/sys/` and `crates/pi-shell/src/proctree.rs` (platform process primitives and ownership)
 - `crates/pi-natives/src/pty.rs`
 - `crates/pi-natives/src/ps.rs`
 - `crates/pi-natives/src/keys.rs`
@@ -22,7 +26,7 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 - **Package entrypoint** (`packages/natives/native/index.js`): loads the `.node` addon and exports generated N-API bindings.
 - **Rust N-API module layer** (`crates/pi-natives/src/*`): JS-facing shell/PTY/process/key exports and callback bridging.
-- **Runtime core** (`crates/pi-shell/src/*`): brush shell execution, cancellation cleanup, minimizer integration, command fixups, and cross-platform process references.
+- **Runtime core** (`crates/pi-shell/src/*`): embedded Bash parser/VM, step-driven sessions, trace events, cancellation cleanup, minimizer integration, and cross-platform process references.
 - **Consumers** (`packages/coding-agent`, `packages/tui`): higher-level session policy, output artifact/minimizer handling, render policy, and UI key handling.
 
 ## Shell subsystem (`shell`)
@@ -36,29 +40,29 @@ Shell execution modes:
 
 Both stream merged stdout/stderr text through a threadsafe callback and return `{ exitCode?, cancelled, timedOut, minimized?, workingDir? }`.
 
-Persistent `Shell` also exposes `liveBackgroundJobCount()`, which silently reaps completed jobs and returns the number of live jobs tracked by the session. Hosts can retain per-call shells while ordinary background jobs remain alive. Builtin `nohup <command> &` is special: brush detaches and reparents the operand so it survives shell teardown; this is not the behavior of the system `nohup` binary.
+Persistent `Shell` also exposes `liveBackgroundJobCount()`, which reaps completed jobs and reports live session-owned jobs. Ordinary builtin `nohup <command> &` detaches the operand from run cancellation and session closure; the fork's explicit owned Stop (`Shell.abort()`) also reaps owned detached work.
 
-`ShellOptions` supports `sessionEnv`, `snapshotPath`, output `minimizer`, and `filesystem`. `ShellExecuteOptions` additionally supports `command`, `cwd`, command-scoped `env`, `timeoutMs`, and `signal`. `ShellRunOptions` supports `command`, `cwd`, command-scoped `env`, `timeoutMs`, `signal`, and a run-only `filesystem` override.
+`ShellOptions` supports `sessionEnv`, `snapshotPath`, output `minimizer`, and `filesystem`. `ShellExecuteOptions` additionally supports `command`, `cwd`, command-scoped `env`, `timeoutMs`, and `signal`. `ShellRunOptions` adds a run-only `filesystem` override, `streams`, and optional `trace`.
+
+Create `new RunTrace(command)` over the same source passed to `shell.run({ command, trace })`. `version()` detects changes; `snapshot()` exposes the bounded JSON execution model; `present()` and `ShellVisualization` render the native trace. The shared wire validator describes source units, UTF-8 byte ranges, command states, output contributors/producers, and actual run status. Truncation is explicit rather than an unbounded event journal. Active cancelled commands emit their own signal-status `CmdEnd` before the real `RunEnd`.
 
 ### Session creation and environment model
 
-Rust creates `brush_core::Shell` with:
+The persistent `Session` drives the embedded engine synchronously in bounded steps on a Tokio task. It waits on engine wakers, filesystem operations, external processes and tool deadlines rather than blocking a shell thread. `PiHost` owns no host signal handlers, inherited descriptors, terminal or process group.
 
-- inherited environment disabled (`do_not_inherit_env: true`), followed by explicit environment reconstruction from host env,
-- profile and rc loading skipped,
-- bash-mode builtins, with `exec` and `suspend` disabled,
-- process builtins registered unconditionally from `pi_builtins::process_builtins()` — `nohup`, `pgrep`, `pkill`, `pidwait`, `ps`, `sleep`, `timeout`, and `top` (`nohup` is withheld when `PI_DISABLE_NOHUP_BUILTIN` is set; `kill` comes from the default bash-mode set, where `pi-builtins`' richer implementation replaces brush's original),
-- in-process utility builtins registered from `pi_builtins::utility_builtins()` (see the next section),
-- an opt-in `git` builtin (`crates/pi-shell/src/git.rs`), registered when either layer below is on; anything a layer does not take runs the git binary with the original arguments:
-   - `PI_SMART_GIT` serves supported `git worktree add` invocations through `pi-vcs`: copy-on-write clone, worktree registration, and reconciliation to the target commit, with an in-process checkout fallback when cloning is unavailable;
-   - `PI_GIT_GUARD` (set by the coding agent from `bash.gitGuard`; `crates/pi-shell/src/git/guard.rs`) judges git commands that discard or move work by the checkout they run in. In a repository's main checkout, which other sessions may share, it refuses with exit status 1: `stash` other than `list`/`show`/`create`, `reset --hard`, `reset` to a commit other than HEAD's, `switch` and `checkout` of a branch or commit, and `checkout` of paths and working-tree `restore` unless the repository is mid-merge/rebase/cherry-pick/revert (unmerged index entries or the operation's state files; a finished rebase's leftover `REBASE_HEAD` does not count), and even then not forced or whole-tree forms. A linked worktree of a non-bare repository, and a submodule inside one, run everything: a command that discards uncommitted tracked changes first records them as a `git stash create` commit on the `refs/omp/discarded` reflog and says so on stderr (refused instead when it recurses into submodules, through `--recurse-submodules` or `submodule.recurse`, since that record does not hold their changes), and `stash pop`/`apply`/`drop`/`branch`/`clear` refuse a stash-list entry whose `WIP on <branch>:`/`On <branch>:` subject names another branch, a detached HEAD, or no branch. It judges the expanded argv in the directory git actually runs in (`cd` and `-C` applied); `--git-dir`/`--work-tree`/`GIT_DIR`-style redirection is refused, since the repository it changes is not the one found from the directory,
-- skip-list for shell-sensitive vars (`PS1`, `PWD`, `SHLVL`, bash function exports, etc.),
-- a non-exported `env="$env"` fallback so PowerShell-style `$env:NAME` survives brush parameter expansion unless the user shadows `env`.
+Session creation uses explicitly reconstructed environment, Bash mode, language builtins from the engine, utility/process commands through `pi-builtins::extras`, and host callouts for `nohup`, `timeout`, and optional `git`. Profile/rc files are not loaded automatically; a supplied `snapshotPath` is sourced with null standard streams. Session utility gates are applied before registration.
+
+The opt-in `git` callout (`crates/pi-shell/src/git/`) retains these layers; operations not handled in-process run the original git binary:
+
+- `PI_SMART_GIT` serves supported `git worktree add` invocations through `pi-vcs`: copy-on-write clone, worktree registration, and reconciliation to the target commit, with an in-process checkout fallback when cloning is unavailable;
+- `PI_GIT_GUARD` (set by the coding agent from `bash.gitGuard`; `crates/pi-shell/src/git/guard.rs`) judges git commands that discard or move work by the checkout they run in. In a repository's main checkout, which other sessions may share, it refuses with exit status 1: `stash` other than `list`/`show`/`create`, `reset --hard`, `reset` to a commit other than HEAD's, `switch` and `checkout` of a branch or commit, and `checkout` of paths and working-tree `restore` unless the repository is mid-merge/rebase/cherry-pick/revert (unmerged index entries or the operation's state files; a finished rebase's leftover `REBASE_HEAD` does not count), and even then not forced or whole-tree forms. A linked worktree of a non-bare repository, and a submodule inside one, run everything: a command that discards uncommitted tracked changes first records them as a `git stash create` commit on the `refs/omp/discarded` reflog and says so on stderr (refused instead when it recurses into submodules, through `--recurse-submodules` or `submodule.recurse`, since that record does not hold their changes), and `stash pop`/`apply`/`drop`/`branch`/`clear` refuse a stash-list entry whose `WIP on <branch>:`/`On <branch>:` subject names another branch, a detached HEAD, or no branch. It judges the expanded argv in the directory git actually runs in (`cd` and `-C` applied); `--git-dir`/`--work-tree`/`GIT_DIR`-style redirection is refused, since the repository it changes is not the one found from the directory.
 
 Session env behavior:
 
+Environment reconstruction omits shell-sensitive variables (`PS1`, `PWD`, `SHLVL`, exported Bash functions, etc.) and seeds a non-exported `env="$env"` fallback for PowerShell-style `$env:NAME`, unless the user shadows `env`.
+
 - `ShellOptions.sessionEnv` / one-shot `sessionEnv` is applied at session creation.
-- `ShellRunOptions.env` / one-shot `env` is command-scoped (`EnvironmentScope::Command`) and popped after the command.
+- `ShellRunOptions.env` / one-shot `env` is restored after the command; changes to those command-scoped keys do not leak into later runs.
 - `PATH` is merged specially on Windows with case-insensitive dedupe.
 - Host and forwarded session environments omit Git repository-location overrides (`GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`), so Git rediscovers the repository from cwd. Explicit command-scoped `env` can supply them again.
 - Windows-only path enrichment (`crates/pi-shell/src/windows.rs`) appends discovered Git-for-Windows paths when present and not already included.
@@ -74,7 +78,7 @@ The session filesystem is restored after a run-only override. Provider waits are
 
 ### In-process utility builtins (uutils-derived)
 
-Beyond the bash builtins, session creation registers the in-process command-line utility builtins implemented in the `pi-builtins` crate (`crates/pi-builtins`) — in-house ports of uutils coreutils/findutils/sed and jaq built on `uucore` 0.8.0. The set includes `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `ls`, `find`, `grep`, `mkdir`, `rm`, `mv`, `cp`, `ln`, `sed`, `jq`, `fd`, `diff`, the checksum/`tr`/`cut`/`date` families, and more; `pi_builtins::utility_builtins()` is the authoritative list.
+Beyond language builtins, session creation registers in-process utilities implemented in `pi-builtins` — ports of uutils coreutils/findutils/sed and jaq built on `uucore` 0.8.0. These include `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `ls`, `find`, `grep`, `mkdir`, `rm`, `mv`, `cp`, `ln`, `sed`, `jq`, `fd`, `diff`, checksum/`tr`/`cut`/`date` families, and more. `pi-builtins/src/extras.rs` is the registration/dispatch source; `shellBuiltins()` reports the configured inventory.
 
 Three search-related builtins are worth calling out:
 
@@ -83,7 +87,7 @@ Three search-related builtins are worth calling out:
 - `fd` is backed by `pi-walker`'s ordered `walk::tree` traversal, `globset`, and `regex`.
 - `ast-grep` (also `sg`) runs ast-grep 0.50's `run` command (`-p`/`-r`/`-U`, `--json`, context, `--heading`, `--files-with-matches`, `--stdin`) on the `pi-ast` search engine with ast-grep's piped (uncolored) output; `scan`, `test`, `new`, `lsp`, `outline`, `--config`, `--interactive`, `--kind`, `--debug-query`, and `--inspect` exit 2 as unsupported.
 
-Each builtin runs inside the shell process (no `fork`/`exec`) against the `pi-builtins` `Host` view of the shell (`src/host.rs`): stdio routes through the command's (possibly piped/redirected) file descriptors, path operands resolve against the shell working directory, the shell's exported environment is visible, and abort/timeout cancellation is honored. Because these builtins shadow system binaries, registration is gated in `crates/pi-shell/src/shell.rs`:
+Each utility runs in-process against explicit per-command I/O, cwd, environment and filesystem, honoring abort/timeout cancellation. Stdio follows pipeline/redirect descriptors. Registration gates live in `crates/pi-shell/src/tools/` and are configured when `shell.rs` creates the session:
 
 - `PI_DISABLE_UUTILS_BUILTINS` disables the whole utility set (bare names resolve to system binaries again),
 - `PI_DISABLE_UUTILS_DESTRUCTIVE` disables the destructive shadows (`rm`, `mv`, `cp`, which overwrites existing files, and `ln`, which can clobber via `-f`) together,
@@ -93,23 +97,18 @@ Builtin switches are read from `sessionEnv` first, then the process environment,
 
 ### Runtime lifecycle and state transitions
 
-Persistent shell (`Shell.run`) uses this state machine:
+Persistent `Shell.run` lazily creates a `Session` driver and runs each command on its root virtual process. Variables, functions, aliases, options, traps and cwd survive command boundaries; root `exit` and `set -e` end that run without discarding the persistent state. Standard streams are replaced per run while higher-numbered descriptors persist.
 
-- **Idle/Uninitialized**: `session: None`.
-- **Running**: first `run()` lazily creates a session, stores an abort token, executes command.
-- **Completed + keepalive**: if execution control flow is normal, abort state is cleared and session is reused.
-- **Completed + teardown**: if control flow is loop/script/shell-exit related, session is dropped.
-- **Cancelled/Timed out**: Tokio cancellation is triggered; a per-run spawn registry targets that run's processes and descendants with TERM/KILL waves. A 2-second graceful task wait is allowed (5 seconds on Windows), the task may be aborted, and the persistent session is dropped if the lock can be acquired.
-- **Error**: session is dropped.
+Run cancellation targets the in-flight command with TERM, then KILL after the engine's one-second grace. Earlier background jobs are outside that run; explicit owned Stop additionally ends owned background and detached work. A settled cancelled run has real command-end/run-end events and cannot remain `running` in its native trace. Late cancellation does not reach the next run.
 
 One-shot shell (`executeShell`) always creates and drops a fresh session per call.
 
 ### Streaming/output and minimizer behavior
 
 - Stdout/stderr are routed into a shared pipe and read concurrently.
-- Reader decodes UTF-8 incrementally; invalid byte sequences emit `U+FFFD` replacement chunks.
+- Text capture decodes incrementally with the host's external-program output decoding; invalid UTF-8 uses replacement characters when UTF-8 decoding is selected.
 - The N-API output bridge has a bounded 64-chunk queue and awaits callback execution, backpressuring pipe readers and the child. Queued chunks are coalesced before forwarding. A single callback stalled for 30 seconds disconnects the bridge so readers can continue draining.
-- The command runs with `ProcessGroupPolicy::NewProcessGroup`.
+- Each external starts in its own session/process group, separate from the SDK host's terminal and process group.
 - After the foreground command completes, the reader drains until EOF, 250ms of idle output, or 2s maximum; reader shutdown then gets a 250ms timeout.
 - The JS forwarding pump then drains accepted output on normal completion/errors; interrupted runs allow at most 2 seconds before aborting that pump. Cancellation delays reader shutdown by 500ms on non-Windows or 2s on Windows so pipeline consumers can flush.
 - Optional minimizer configuration can capture and rewrite output. When minimization occurs, the result includes `minimized` with filter name, replacement/original text, and byte counts.
@@ -119,15 +118,15 @@ One-shot shell (`executeShell`) always creates and drops a fresh session per cal
 ### Cancellation, timeout, and abort
 
 - `CancelToken` is constructed from `timeoutMs` and optional `AbortSignal`, then converted into the shared `pi_shell::cancel::CancelToken`.
-- On cancellation/timeout, shell cancellation token is triggered, descendant cleanup runs, then the task gets a 2-second graceful window (5 seconds on Windows) before forced abort.
+- On cancellation/timeout, the driver cancels the target run, sends TERM/KILL to its external process groups, and unwinds live command frames. The wrapper permits a 2-second graceful run window (5 seconds on Windows) before forced abort.
 - Structured result flags are used:
    - timeout -> `exitCode` omitted, `timedOut: true`.
    - abort signal / `Shell.abort()` -> `exitCode` omitted, `cancelled: true`.
 
 `Shell.abort()` behavior:
 
-- aborts the current running command for that `Shell` instance through the stored `AbortToken`,
-- resolves successfully even when nothing is running.
+- aborts the current run and performs explicit cleanup of this shell's owned background, detached and provider work, including while idle;
+- waits for native cleanup and propagates cleanup failure, while preserving the next usable run's session state.
 
 ### Failure behavior
 

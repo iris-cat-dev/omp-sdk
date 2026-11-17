@@ -16,8 +16,9 @@ members = [
    "crates/pi-vfs",
    "crates/pi-voice",
    "crates/pi-walker",
-   "crates/vendor/brush-core",
-   "crates/vendor/brush-parser",
+   "crates/vendor/jaq-core",
+   "crates/vendor/jaq-json",
+   "crates/vendor/jaq-std",
    "crates/vendor/cfg_aliases",
    "crates/vendor/grep-searcher",
    "crates/vendor/napi",
@@ -28,19 +29,20 @@ resolver = "3"
 [workspace.package]
 version = "18.14.0"
 edition = "2024"
+rust-version = "1.99.0"
 license = "MIT"
 authors = ["Stencil Labs, Inc."]
 homepage = "https://omp.sh/"
 repository = "https://github.com/can1357/oh-my-pi"
 
 [patch.crates-io]
-brush-core = { path = "crates/vendor/brush-core" }
-# brush-parser 0.4.0 (latest release) re-parses `$(...)` bodies without
-# here-document awareness; the vendored copy fixes it (see its README.md).
-brush-parser = { path = "crates/vendor/brush-parser" }
 # portable-pty 0.9.0 pins nix 0.28, whose cfg_aliases 0.1.1 expansion emits
 # future-incompatible trailing semicolons.
 cfg_aliases = { path = "crates/vendor/cfg_aliases" }
+# The embedded jq evaluator polls cancellation and preserves jq 1.8 semantics.
+jaq-core = { path = "crates/vendor/jaq-core" }
+jaq-json = { path = "crates/vendor/jaq-json" }
+jaq-std = { path = "crates/vendor/jaq-std" }
 # grep-searcher 0.1.17 (latest release) searches either a blocking `io::Read`
 # or a whole slice; the vendored copy adds the chunk-fed `search_push` (see its
 # README.md).
@@ -128,6 +130,10 @@ split-debuginfo = "unpacked"
 opt-level = 2
 codegen-units = 256
 debug = false
+
+# Bound parser/arithmetic recursion within the default test-thread stack.
+[profile.dev.package.pi-shell]
+opt-level = 1
 
 [workspace.lints.rust]
 # ──────────────────────────────────────────────────────────────────────────────
@@ -257,8 +263,17 @@ pi-voice = { path = "crates/pi-voice", default-features = false }
 pi-walker = { path = "crates/pi-walker" }
 pi-vcs = { path = "crates/pi-vcs", default-features = false }
 pi-vfs = { path = "crates/pi-vfs" }
-brush-core = { path = "crates/vendor/brush-core" }
 pi-builtins = { path = "crates/pi-builtins" }
+# Dependencies of pi-shell's embedded bash engine.
+blake3 = { version = "1.8.7", features = ["rayon"] }
+bstr = { version = "1.13.1", features = ["serde"] }
+encoding_rs = "0.8.42"
+hashbrown = "0.17.1"
+jiff = "0.2.38"
+libm = "0.2.16"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+strum = { version = "0.28.0", features = ["derive"] }
+tempfile = "3.27.0"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Async Runtime & Concurrency
@@ -289,7 +304,7 @@ bytes = "1"
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI & Configuration
 # ──────────────────────────────────────────────────────────────────────────────
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Text Processing & Parsing
@@ -325,7 +340,7 @@ webrtc = "0.17.2"
 # ──────────────────────────────────────────────────────────────────────────────
 # System & Platform
 # ──────────────────────────────────────────────────────────────────────────────
-libc = "0.2"
+libc = "0.2.190"
 windows-sys = { version = "0.61", features = [
    "Win32_Foundation",
    "Win32_Globalization",
@@ -335,9 +350,13 @@ windows-sys = { version = "0.61", features = [
    "Win32_Storage_FileSystem",
    "Win32_Storage_ProjectedFileSystem",
    "Win32_System_Com",
+   "Win32_System_Console",
    "Win32_System_LibraryLoader",
    "Win32_System_IO",
    "Win32_System_Ioctl",
+   "Win32_System_JobObjects",
+   "Win32_System_Pipes",
+   "Win32_System_SystemInformation",
    "Win32_System_Threading",
 ] }
 # Transitive-only pin (wired through crates/pi-natives' `cfg(false)` target
@@ -372,6 +391,7 @@ shlex = "2"
 globset = "0.4"
 grep-matcher = "0.1"
 grep-pcre2 = "0.1"
+pcre2-sys = "0.2.10"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
@@ -418,14 +438,9 @@ html-to-markdown-rs = { version = "3.18.3", default-features = false }
 # ──────────────────────────────────────────────────────────────────────────────
 xutf = "1.5"
 zstd = "0.14"
-# The version brush-core builds on; bump with it.
 fancy-regex = "0.17"
 tiktoken-rs = "0.12"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Shell Parsing
-# ──────────────────────────────────────────────────────────────────────────────
-brush-parser = { path = "crates/vendor/brush-parser" }
 # ──────────────────────────────────────────────────────────────────────────────
 # Version Control (in-process git + jujutsu)
 # ──────────────────────────────────────────────────────────────────────────────

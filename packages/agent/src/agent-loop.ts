@@ -53,7 +53,7 @@ import {
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { isDsmlLeakRecoveryTarget, removeDsmlToolMarkupLeak } from "@oh-my-pi/pi-ai/utils/dsml-leak";
-import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { cloneJsonTree, isRecord, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
 import { agentPauseGate } from "./pause";
@@ -104,6 +104,7 @@ import type {
 	StreamFn,
 } from "./types";
 import {
+	AgentToolError,
 	ASIDE_MESSAGE_COMMIT,
 	ASIDE_MESSAGE_DISCARD,
 	isSoftToolRequirement,
@@ -3711,7 +3712,7 @@ async function executeToolCalls(
 				caughtError = e;
 				result = {
 					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
-					details: {},
+					details: e instanceof AgentToolError ? (e.details ?? {}) : {},
 				};
 				isError = true;
 			}
@@ -3766,7 +3767,18 @@ async function executeToolCalls(
 			// user abort takes priority even if a queued interrupt fixed the
 			// combined signal's reason first; keep the actual cancellation error.
 			record.skipped = true;
-			emitToolResult(record, createSkippedToolResult(interruptState.source, executionStarted), true);
+			const skipped = createSkippedToolResult(interruptState.source, executionStarted);
+			const details = caughtError instanceof AgentToolError ? caughtError.details : undefined;
+			emitToolResult(
+				record,
+				isRecord(details)
+					? {
+							...skipped,
+							details: { ...details, ...skipped.details },
+						}
+					: skipped,
+				true,
+			);
 		} else {
 			// A tool that finished before the interrupt landed (`completedToolExecution`)
 			// keeps its real result even if its signal aborted around completion:

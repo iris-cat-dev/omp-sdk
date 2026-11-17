@@ -1,17 +1,21 @@
 /**
  * Bash command execution with streaming support and cancellation.
  *
- * Uses brush-core via native bindings for shell execution.
+ * Uses the embedded bash engine (pi-shell) through native bindings for execution.
  */
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { AgentToolError } from "@oh-my-pi/pi-agent-core";
 import {
 	type MinimizerOptions,
 	type PipeStreams,
 	PtySession,
+	RunTrace,
 	Shell,
 	type ShellFilesystem,
 	type ShellRunResult,
 } from "@oh-my-pi/pi-natives";
+import { isShellTrace, type ShellTrace } from "@oh-my-pi/pi-wire";
+import { logger } from "@oh-my-pi/pi-utils";
 import { $env } from "@oh-my-pi/pi-utils/env";
 import { isCmdShell, isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings } from "../config/settings";
@@ -53,7 +57,7 @@ export interface BashExecutorOptions {
 	sessionKey?: string;
 	/** Additional environment variables to inject */
 	env?: Record<string, string>;
-	/** Run through the configured user shell instead of brush parsing directly. */
+	/** Run through the configured user shell instead of the embedded shell parsing directly. */
 	useUserShell?: boolean;
 	/** Run supported user shells (zsh/fish) on a headless PTY; requires `useUserShell`. */
 	pty?: BashPtyOptions;
@@ -72,6 +76,8 @@ export interface BashExecutorOptions {
 	 * embedded shell (`proc://<id>/streams`). The user-shell paths ignore it.
 	 */
 	streams?: PipeStreams;
+	/** Changed embedded-shell snapshots every 80ms and a final snapshot on settlement. PTY runs omit it. */
+	onTrace?: (trace: ShellTrace) => void;
 	/**
 	 * Invoked once the embedded shell starts the command, with a probe of the
 	 * live pids it spawned (empty once the run ends). Not called on the
@@ -125,6 +131,8 @@ export interface BashResult {
 	cancelled: boolean;
 	/** True when the command was killed by its timeout deadline (not a user abort). */
 	timedOut?: boolean;
+	/** Complete bounded execution snapshot when `onTrace` requested tracing. */
+	trace?: ShellTrace;
 	truncated: boolean;
 	totalLines: number;
 	totalBytes: number;
@@ -146,6 +154,44 @@ const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** A `scheme://` working directory: it exists only in the embedded shell's injected filesystem. */
 const URL_CWD_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+const TRACE_POLL_MS = 80;
+
+/** Stop is idempotent: no timer or callback survives the run's final snapshot. */
+function pollRunTrace(trace: RunTrace, onTrace: (trace: ShellTrace) => void): { stop: () => ShellTrace | undefined } {
+	let last = -1;
+	let latest: ShellTrace | undefined;
+	let warned = false;
+	let stopped = false;
+	const poll = () => {
+		try {
+			const version = trace.version();
+			if (version === last) return;
+			last = version;
+			const snapshot: unknown = JSON.parse(trace.snapshot());
+			if (!isShellTrace(snapshot)) throw new Error("Native shell returned an invalid execution trace");
+			latest = snapshot;
+			onTrace(snapshot);
+		} catch (error) {
+			// Native snapshots and consumer callbacks run on a timer; a visualization
+			// failure must not become an uncaught exception that kills the session.
+			if (!warned) logger.warn("Shell execution trace update failed", { error });
+			warned = true;
+		}
+	};
+	const timer = setInterval(poll, TRACE_POLL_MS);
+	timer.unref?.();
+	return {
+		stop: () => {
+			if (!stopped) {
+				stopped = true;
+				clearInterval(timer);
+				poll();
+			}
+			return latest;
+		},
+	};
+}
 
 export interface DirenvPreflightOptions {
 	/** Caller-supplied env overlay; these values win over direnv-provided ones. */
@@ -429,7 +475,7 @@ export async function releaseShellRuntimeResource(owner: string, resourceId: str
 }
 
 function resolveShellCwd(cwd: string | undefined): string | undefined {
-	// Preserve the caller's logical cwd string. Brush uses this value to update `PWD` and its
+	// Preserve the caller's logical cwd string. The embedded shell uses this value to update `PWD` and its
 	// internal working directory, so realpathing here collapses symlinks before the shell sees them.
 	return cwd;
 }
@@ -709,7 +755,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	const commandEnv = buildNonInteractiveEnv(preflight.env);
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
 	// Never wrap in cmd.exe: it is only the Windows no-bash fallback for spawn
-	// paths, and the embedded brush shell runs the POSIX line better directly.
+	// paths, and the embedded shell runs the POSIX line better directly.
 	const finalCommand =
 		options?.useUserShell === true && !bashShell && !isCmdShell(shell) && !runCdInPersistentShell
 			? buildUserShellCommand(shell, args, preflight.command)
@@ -868,6 +914,12 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	}
 
 	let resetSession = false;
+	const runTrace = options?.onTrace ? new RunTrace(finalCommand) : undefined;
+	const tracePoll = runTrace && options?.onTrace ? pollRunTrace(runTrace, options.onTrace) : undefined;
+	const settleTrace = (): { trace?: ShellTrace } => {
+		const trace = tracePoll?.stop();
+		return trace ? { trace } : {};
+	};
 
 	try {
 		const runPromise = executionShell.run(
@@ -879,6 +931,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				signal: runAbortController.signal,
 				filesystem: options?.filesystem,
 				streams: options?.streams,
+				trace: runTrace,
 			},
 			(err, chunk) => {
 				if (!err) {
@@ -929,6 +982,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				exitCode: undefined,
 				cancelled: true,
 				...(winner.kind === "timeout" ? { timedOut: true } : {}),
+				...settleTrace(),
 				...(await dump(notice)),
 			};
 		}
@@ -950,6 +1004,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				exitCode: undefined,
 				cancelled: true,
 				timedOut: true,
+				...settleTrace(),
 				...(await dump(annotation)),
 			};
 		}
@@ -963,6 +1018,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			return {
 				exitCode: undefined,
 				cancelled: true,
+				...settleTrace(),
 				...(await dump("Command cancelled")),
 			};
 		}
@@ -1000,12 +1056,23 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			exitCode: winner.result.exitCode,
 			cancelled: false,
 			workingDir: winner.result.workingDir,
+			...settleTrace(),
 			...(await dump()),
 		};
 	} catch (err) {
 		resetSession = true;
+		const final = settleTrace();
+		if (final.trace) {
+			const error = new AgentToolError(err instanceof Error ? err.message : String(err), { cause: err }, final);
+			if (err instanceof Error) {
+				error.name = err.name;
+				error.stack = err.stack;
+			}
+			throw error;
+		}
 		throw err;
 	} finally {
+		settleTrace();
 		await sink.dispose();
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);

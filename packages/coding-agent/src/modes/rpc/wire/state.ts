@@ -228,6 +228,7 @@ export const stateDefs = {
 		"artifactError?": JSON_OBJECT,
 		"workingDir?": "string",
 		"images?": "ImageContent[]",
+		"trace?": doc(JSON_OBJECT, "The embedded shell's final bounded ShellTrace when tracing was requested."),
 	},
 	FastModeResult: { enabled: "boolean", active: "boolean" },
 	CompactionResult: {

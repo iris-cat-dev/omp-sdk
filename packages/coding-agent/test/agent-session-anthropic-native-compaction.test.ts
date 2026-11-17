@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { __resetProxyCache } from "@oh-my-pi/pi-ai/utils/proxy";
+import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as coworkTransport from "@oh-my-pi/pi-ai/providers/cowork-fetch";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -93,20 +93,8 @@ function withoutCacheControl(value: unknown): unknown {
 }
 
 describe("AgentSession Anthropic native compaction", () => {
-	const previousProxy = Bun.env.PI_PROXY_ANTHROPIC;
-
-	beforeEach(() => {
-		// A provider proxy moves first-party requests off the Cowork transport
-		// onto `globalThis.fetch`, where the spy below answers them.
-		Bun.env.PI_PROXY_ANTHROPIC = "http://proxy.example.test:8080";
-		__resetProxyCache();
-	});
-
 	afterEach(() => {
 		vi.restoreAllMocks();
-		if (previousProxy === undefined) delete Bun.env.PI_PROXY_ANTHROPIC;
-		else Bun.env.PI_PROXY_ANTHROPIC = previousProxy;
-		__resetProxyCache();
 	});
 
 	const captured = () =>
@@ -120,15 +108,15 @@ describe("AgentSession Anthropic native compaction", () => {
 		const model = getBundledModel("anthropic", "claude-opus-5-5");
 		if (!model) throw new Error("Expected bundled claude-opus-5-5");
 		const requests: MessagesRequest[] = [];
-		vi.spyOn(globalThis, "fetch").mockImplementation(
-			asGlobalFetch(async (input, init) => {
-				if (!String(input).startsWith("https://api.anthropic.com/v1/messages")) {
-					throw new Error(`Unexpected request to ${String(input)}`);
-				}
-				requests.push(JSON.parse(requestBodyText(init) ?? "{}"));
-				return respond(requests.length);
-			}),
-		);
+		const fixtureFetch = asGlobalFetch(async (input, init) => {
+			if (!String(input).startsWith("https://api.anthropic.com/v1/messages")) {
+				throw new Error(`Unexpected request to ${String(input)}`);
+			}
+			requests.push(JSON.parse(requestBodyText(init) ?? "{}"));
+			return respond(requests.length);
+		});
+		vi.spyOn(globalThis, "fetch").mockImplementation(fixtureFetch);
+		vi.spyOn(coworkTransport, "coworkFetch").mockImplementation(fixtureFetch);
 		const authStorage = await AuthStorage.create(tempDir.join("auth.db"));
 		authStorage.keys.setRuntime("anthropic", "sk-ant-test");
 		const sessionManager = SessionManager.inMemory(tempDir.path());
@@ -140,6 +128,10 @@ describe("AgentSession Anthropic native compaction", () => {
 			modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
 			settings: Settings.isolated({ "compaction.methodOrder": ["remote"], "compaction.keepRecentTokens": 1 }),
 			model,
+			proxyPolicy: {
+				enabled: true,
+				providers: { anthropic: { mode: "proxy", url: "http://proxy.example.test:8080" } },
+			},
 			disableExtensionDiscovery: true,
 			skills: [],
 			contextFiles: [],

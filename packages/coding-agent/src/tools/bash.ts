@@ -18,9 +18,10 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { PipeStreams } from "@oh-my-pi/pi-natives";
+import type { ShellTrace } from "@oh-my-pi/pi-wire";
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { isPosixShell } from "@oh-my-pi/pi-utils/procmgr";
-import { raceJobSettlement, resolveAutoBackgroundWaitMs } from "../async";
+import { type AsyncJobDetails, raceJobSettlement, resolveAutoBackgroundWaitMs } from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import { InternalUrlRouter } from "../internal-urls";
@@ -435,6 +436,7 @@ interface ManagedBashJobHandle {
 	jobId: string;
 	completion: Promise<ManagedBashJobCompletion>;
 	getLatestText: () => string;
+	getLatestTrace: () => ShellTrace | undefined;
 	/** Notices for this call's results, including one added once the run starts (temporary shell). */
 	notices: readonly string[];
 	/** Hand the call's card to the job: later frames carry `details.async` and the last one settles it. */
@@ -700,6 +702,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		result: BashResult | BashInteractiveResult,
 		timeoutSec: number | undefined,
 		outputText: string,
+		details?: BashToolDetails,
 	): void {
 		const captureNotice = result.artifactError ? `\n\n[${formatArtifactErrorNotice(result.artifactError)}]` : "";
 		if (result.cancelled) {
@@ -708,16 +711,20 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			// the latter.
 			const out = normalizeResultOutput(result);
 			const annotated = out.startsWith("[Command cancelled]") ? out : out ? `${out}\n\n[Command aborted]` : out;
-			throw new ToolError(`${annotated || "Command aborted"}${captureNotice}`);
+			throw new ToolError(`${annotated || "Command aborted"}${captureNotice}`, undefined, details);
 		}
 		if (result.timedOut === true) {
 			const out = normalizeResultOutput(result);
 			const message =
 				timeoutSec === undefined ? "Command timed out" : `Command timed out after ${timeoutSec} seconds`;
-			throw new ToolError(`${out ? `${out}\n\n[${message}]` : message}${captureNotice}`);
+			throw new ToolError(`${out ? `${out}\n\n[${message}]` : message}${captureNotice}`, undefined, details);
 		}
 		if (result.exitCode === undefined) {
-			throw new ToolError(`${outputText}\n\nCommand failed: missing exit status${captureNotice}`);
+			throw new ToolError(
+				`${outputText}\n\nCommand failed: missing exit status${captureNotice}`,
+				undefined,
+				details,
+			);
 		}
 	}
 
@@ -776,6 +783,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			details.exitCode = exitCode;
 		}
 		if (options.replies?.length) details.replies = [...options.replies];
+		if ("trace" in result && result.trace) details.trace = result.trace;
+		if (result.cancelled && !result.timedOut) details.cancelled = true;
 
 		// Final-defense inline cap config, shared by the timeout and normal
 		// completion paths. The sink already bounds inline bodies to the spill
@@ -809,7 +818,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 
 		// Non-timeout cancellations and missing exit status still propagate as thrown errors.
-		this.#throwIfUnfinished(result, timeoutSec, outputText);
+		this.#throwIfUnfinished(result, timeoutSec, outputText, details);
 		await invalidateGithubCacheForBashResult(options.command, options.cwd, result);
 
 		// No-op for already-bounded output; see `inlineCap` above.
@@ -826,11 +835,17 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		jobId: string,
 		previewText: string,
 		timeoutSec: number | undefined,
-		options: { requestedTimeoutSec?: number; notices?: readonly string[]; replies?: readonly string[] } = {},
+		options: {
+			requestedTimeoutSec?: number;
+			notices?: readonly string[];
+			replies?: readonly string[];
+			trace?: ShellTrace;
+		} = {},
 	): AgentToolResult<BashToolDetails> {
 		const details: BashToolDetails = {
 			async: { state: "running", jobId, type: "bash" },
 		};
+		if (options.trace) details.trace = options.trace;
 		if (options.replies?.length) details.replies = [...options.replies];
 		if (timeoutSec === undefined) {
 			details.timeoutDisabled = true;
@@ -900,10 +915,13 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
 		const notices = [...(options.notices ?? [])];
 		const replies: string[] = [];
+		let liveTrace: ShellTrace | undefined;
 		// While the call waits on the run, every frame of its card carries the replies so far and the
 		// transcript draws the new ones. A backgrounded job's frames carry none: the call's result already did.
-		const withReplies = (details: BashProgressDetails): BashProgressDetails =>
-			!backgrounded && replies.length > 0 ? { ...details, replies: [...replies] } : details;
+		const withReplies = (details: BashProgressDetails): BashProgressDetails => {
+			const withTrace = liveTrace && !details.trace ? { ...details, trace: liveTrace } : details;
+			return !backgrounded && replies.length > 0 ? { ...withTrace, replies: [...replies] } : withTrace;
+		};
 		// Replies reach the user only while the call waits on the run: once it returns, nothing draws them.
 		const onReply = (text: string): void => {
 			if (backgrounded) {
@@ -925,7 +943,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				// backgrounded, so the card keeps filling and settles with the job.
 				const report = async (text: string, details: BashProgressDetails): Promise<void> => {
 					latestText = text;
-					const reported = reportProgress(text, { ...details });
+					const jobDetails: AsyncJobDetails = { ...withReplies(details) };
+					const reported = reportProgress(text, jobDetails);
 					// `output` feeds job listings; the card already shows `text`.
 					const { output: _output, ...frame } = details;
 					options.onUpdate?.({
@@ -961,6 +980,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						onPreview: text => {
 							void report(text, { output: text, async: { state: "running", jobId, type: "bash" } });
 						},
+						onTrace: trace => {
+							liveTrace = trace;
+							void report(latestText, { output: latestText, async: { state: "running", jobId, type: "bash" } });
+						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 						streams,
 						onStart: probe => {
@@ -971,7 +994,12 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						pids = NO_PIDS;
 						outputTap.close();
 					});
-					if (result.artifactError) latestProgressDetails = { meta: { artifactError: result.artifactError } };
+					latestProgressDetails = {
+						...(result.artifactError ? { meta: { artifactError: result.artifactError } } : {}),
+						...(result.trace ? { trace: result.trace } : {}),
+						...(result.cancelled && !result.timedOut ? { cancelled: true } : {}),
+						...(result.timedOut ? { timedOut: true } : {}),
+					};
 					const wallTimeMs = performance.now() - wallTimeStart;
 					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						command: options.command,
@@ -1005,6 +1033,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					return finalText;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
+					latestProgressDetails = {
+						...latestProgressDetails,
+						...(liveTrace ? { trace: liveTrace } : {}),
+						...(runSignal.aborted ? { cancelled: true } : {}),
+					};
 					completion.resolve({ kind: "failed", error });
 					// Only a cancel aborts the job's own signal (deadlines end in a timed-out result).
 					await report(message, {
@@ -1012,6 +1045,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						async: { state: runSignal.aborted ? "cancelled" : "failed", jobId, type: "bash" },
 					});
 					throw error;
+				} finally {
+					liveTrace = undefined;
 				}
 			},
 			{
@@ -1029,6 +1064,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			jobId,
 			completion: completion.promise,
 			getLatestText: () => latestText,
+			getLatestTrace: () => liveTrace ?? latestProgressDetails?.trace,
 			notices,
 			background: () => {
 				backgrounded = true;
@@ -1252,6 +1288,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 				requestedTimeoutSec,
 				notices: pendingNotices,
+				trace: job.getLatestTrace(),
 			});
 		}
 
@@ -1296,6 +1333,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 					requestedTimeoutSec,
 					notices: pendingNotices,
+					trace: job.getLatestTrace(),
 				});
 			}
 			// The job was registered as foreground-backed: hidden from listings and
@@ -1316,9 +1354,13 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				throw waitResult.error;
 			}
 			if (waitResult.kind === "aborted") {
+				const message = job.getLatestText() || "Command aborted";
 				autoBgManager.cancel(job.jobId);
 				autoBgManager.releaseForegroundJob(job.jobId);
-				throw new ToolAbortError(job.getLatestText() || "Command aborted");
+				const settled = await job.completion;
+				const details: BashToolDetails = { cancelled: true, trace: job.getLatestTrace() };
+				if (settled.kind === "completed" && settled.result.details) Object.assign(details, settled.result.details);
+				throw new ToolAbortError(message, undefined, details);
 			}
 			job.background();
 			autoBgManager.backgroundJob(job.jobId);
@@ -1333,6 +1375,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				requestedTimeoutSec,
 				notices,
 				replies: job.replies,
+				trace: job.getLatestTrace(),
 			});
 		}
 
@@ -1649,11 +1692,15 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		// Each frame of the card repeats the latest preview with the replies so far; the transcript draws the new ones.
 		const replies: string[] = [];
 		let preview = "";
+		let trace: ShellTrace | undefined;
 		const emitFrame = onUpdate
 			? () =>
 					onUpdate({
 						content: [{ type: "text", text: preview }],
-						details: replies.length > 0 ? { replies: [...replies] } : {},
+						details: {
+							...(replies.length > 0 ? { replies: [...replies] } : {}),
+							...(trace ? { trace } : {}),
+						},
 					})
 			: undefined;
 		const result: BashResult | BashInteractiveResult = interactiveUi
@@ -1695,6 +1742,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 								emitFrame();
 							}
 						: undefined,
+					onTrace: next => {
+						trace = next;
+						emitFrame?.();
+					},
 					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					onSessionShellBusy: () => pendingNotices.push(SESSION_SHELL_BUSY_NOTICE),
 				});
@@ -1718,9 +1769,15 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						: "Command aborted";
 				if (result.artifactError) message += `\n\n[${formatArtifactErrorNotice(result.artifactError)}]`;
 				if (signal?.aborted) {
-					throw new ToolAbortError(message);
+					throw new ToolAbortError(message, undefined, {
+						cancelled: true,
+						...("trace" in result && result.trace ? { trace: result.trace } : {}),
+					});
 				}
-				throw new ToolError(message);
+				throw new ToolError(message, undefined, {
+					cancelled: true,
+					...("trace" in result && result.trace ? { trace: result.trace } : {}),
+				});
 			}
 		}
 		return this.#buildCompletedResult(result, timeoutSec, {

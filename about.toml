@@ -12,6 +12,7 @@ accepted = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "bzip2-1.0.6",
     "ISC",
     "Unicode-3.0",
     "Zlib",
@@ -25,8 +26,6 @@ accepted = [
 [inferno]
 accepted = ["CDDL-1.0"]
 
-[terminfo]
-accepted = ["WTFPL"]
 
 [uluru]
 accepted = ["MPL-2.0"]

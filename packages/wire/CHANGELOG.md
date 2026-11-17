@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the shared bounded shell-trace contract and runtime validator, including UTF-8 source ranges, command states, output attribution, and terminal run status.
+
 ## [18.14.0] - 2026-10-29
 
 ### Added

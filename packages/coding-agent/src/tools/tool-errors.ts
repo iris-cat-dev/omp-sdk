@@ -5,16 +5,17 @@
  * The agent loop catches and renders them appropriately.
  */
 
+import { AgentToolError } from "@oh-my-pi/pi-agent-core";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 /**
  * Error thrown when a tool operation is aborted (e.g., via AbortSignal).
  */
-export class ToolAbortError extends Error {
+export class ToolAbortError<T = unknown> extends AgentToolError<T> {
 	static readonly MESSAGE = "Operation aborted";
 
-	constructor(message: string = ToolAbortError.MESSAGE, options?: ErrorOptions) {
-		super(message, options);
+	constructor(message: string = ToolAbortError.MESSAGE, options?: ErrorOptions, details?: T) {
+		super(message, options, details);
 		this.name = "ToolAbortError";
 	}
 }

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added live native Bash execution traces to foreground, background, and final tool details in both generic and Desktop Node SDK builds, preserving real command/output attribution through failure, timeout, and cancellation.
 - Added `compactionCount` to session statistics and RPC `get_session_stats`, counting persisted compactions on the selected branch across resume without including unsuccessful attempts.
 - Added opt-in sandbox image generation through the host's native image settings, sandbox-only input/output files and profile-3 admission; QQ can upload generated images without exposing other host tools.
 - Added mandatory SDK sandbox sessions with a pinned native file namespace, fixed read/write/list capabilities, literal user prompt and model preference preservation, immutable tool admission, provider-request identity/path isolation, durable resume policy, and fail-closed Node SDK compatibility checks. Trusted gateways have a separate bounded binary filesystem entry; ordinary Desktop sessions retain their existing capabilities.

@@ -627,6 +627,8 @@ export interface BashResult {
 	artifactError?: Record<string, unknown>;
 	workingDir?: string;
 	images?: ImageContent[];
+	/** The embedded shell's final bounded ShellTrace when tracing was requested. */
+	trace?: Record<string, unknown>;
 }
 
 export interface FastModeResult {

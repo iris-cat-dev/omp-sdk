@@ -81,7 +81,10 @@ it("keeps shell, Python and JavaScript state usable across a real branch, then r
 		getEvalKernelOwnerId: () => session.getEvalKernelOwnerId(),
 		trackEvalExecution: (execution, controller) => session.trackEvalExecution(execution, controller),
 	});
-	expect((await evalTool.execute("branch-js-create", { language: "js", code: "var marker = 42; print(marker);" })).details?.cells[0]?.output).toContain("42");
+	expect(
+		(await evalTool.execute("branch-js-create", { language: "js", code: "var marker = 42; print(marker);" })).details
+			?.cells?.[0]?.output,
+	).toContain("42");
 	const before = await session.getRuntimeResources();
 	const shell = before.find(item => item.kind === "shell");
 	const kernel = before.find(item => item.kind === "python_kernel");
@@ -96,7 +99,10 @@ it("keeps shell, Python and JavaScript state usable across a real branch, then r
 	expect(after.some(item => item.id === kernel.id)).toBe(true);
 	expect(after.some(item => item.id === javascript.id)).toBe(true);
 	expect((await session.executePython("print(marker)")).output).toContain("42");
-	expect((await evalTool.execute("branch-js-read", { language: "js", code: "print(marker);" })).details?.cells[0]?.output).toContain("42");
+	expect(
+		(await evalTool.execute("branch-js-read", { language: "js", code: "print(marker);" })).details?.cells?.[0]
+			?.output,
+	).toContain("42");
 	const afterRead = await session.getRuntimeResources();
 	expect(afterRead.find(item => item.id === kernel.id)?.pid).toBe(kernel.pid);
 	expect(afterRead.find(item => item.id === javascript.id)?.pid).toBe(javascript.pid);
@@ -109,7 +115,10 @@ it("keeps shell, Python and JavaScript state usable across a real branch, then r
 	expect((await session.executePython("print('marker' in globals())")).output).toContain("False");
 	await session.releaseRuntimeResource(javascript.id);
 	expect(() => process.kill(javascript.pid!, 0)).toThrow();
-	expect((await evalTool.execute("branch-js-missing", { language: "js", code: "print(typeof marker);" })).details?.cells[0]?.output).toContain("undefined");
+	expect(
+		(await evalTool.execute("branch-js-missing", { language: "js", code: "print(typeof marker);" })).details
+			?.cells?.[0]?.output,
+	).toContain("undefined");
 }, 60_000);
 
 it("releases a real JavaScript subprocess, clears its variables and preserves an unrelated kernel", async () => {

@@ -12,6 +12,7 @@ import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall"
 import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { asGlobalFetch } from "./helpers/fetch-mock";
 
 const sessions: AgentSession[] = [];
 const dirs: TempDir[] = [];
@@ -42,9 +43,11 @@ describe("Mnemopi readiness", () => {
 	});
 	it("blocks incompatible core startup without tools or outbound requests, recovers explicitly, and preserves saved data across failed reconfiguration", async () => {
 		spyOn(sdkProfile, "isCoreSdk").mockReturnValue(true);
-		const fetch = spyOn(globalThis, "fetch").mockImplementation(() => {
-			throw new Error("This local memory test must not send requests");
-		});
+		const fetch = spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(() => {
+				throw new Error("This local memory test must not send requests");
+			}),
+		);
 		const dir = TempDir.createSync("@mnemopi-readiness-");
 		dirs.push(dir);
 		const notices: string[] = [];

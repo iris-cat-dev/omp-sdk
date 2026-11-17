@@ -109,7 +109,7 @@ describe("createAgentSession auto-learn tool activation", () => {
 				sessionManager: SessionManager.inMemory(registryDir),
 				taskDepth: 1,
 				parentMnemopiSessionState: inherited,
-				toolNames: grant.toolNames,
+				toolNames: grant.toolNames ? [...grant.toolNames] : undefined,
 			})
 		).session;
 		sessions.push(child);

@@ -10,6 +10,7 @@
  * below cover only the variants this client renders; consumers cast at the
  * JSON boundary and every `switch` keeps a tolerant `default:` branch.
  */
+export * from "./shell-trace";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Content blocks

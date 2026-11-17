@@ -198,7 +198,7 @@ _[Watch the capture ↗](https://omp.sh/clips/web.mp4)_
 
 ### 09 · Unapologetically native. Even on Windows.
 
-Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. omp links the real implementations into the process. ripgrep, glob, find: in-process. brush is the bash — with sessions that survive across calls, and 58 command-line utilities (ls, sed, sort, xargs, even jq) ported into the builtins crate and run in-process, zero fork/exec. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
+Other agents shell out to rg, grep, find, and bash. omp links search and the embedded `pi-shell` Bash parser/VM into the process. Persistent sessions retain variables, functions and working directories across calls, with native execution traces for command state and output attribution. Language builtins and utility ports (ls, sed, sort, xargs, jq, and more) run in-process; external programs still spawn normally. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
 
 ### 10 · Code review with priorities and a verdict
 
@@ -449,23 +449,23 @@ Vuln lookups answer with vendor data, not blog summaries.
 
 [`web_search` reference ↗](https://omp.sh/docs/tools#web_search)
 
-## Roughly **~80,000** lines of Rust, doing the work other harnesses shell out for.
+## Native Rust runtime
 
-Six crates, one platform-tagged N-API addon. Search, shell, AST, highlight, PTY, desktop control, image decode, BPE counting — all in-process on the libuv pool. No fork/exec on the hot path. Another ~80k lines ride along vendored: the brush bash fork, plus 58 command-line utilities — coreutils, findutils, sed, jq, ripgrep-backed grep, fd, diff, moreutils — ported into the builtins crate and compiled straight into the shell.
+One platform-tagged N-API addon provides search, shell, AST, highlighting, PTY, desktop control, image decoding and token counting. The embedded Bash engine supplies persistent sessions and real execution traces; in-process utility ports include coreutils, findutils, sed, jq, ripgrep-backed grep, fd, diff and moreutils.
 
 - Crates: `pi-natives`, `pi-shell`, `pi-ast`, `pi-iso`, `pi-voice`, `pi-walker`
 - Platforms: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`, `win32-arm64` — x64 ships dual AVX2 and baseline binaries
 
-Per crate, code lines only:
+Native runtime responsibilities:
 
-| Crate      | What it does                                                                           |   ~LoC |
-| ---------- | -------------------------------------------------------------------------------------- | -----: |
-| pi-shell   | Embedded bash engine · persistent sessions · in-process coreutils dispatch · minimizer | 38,000 |
-| pi-natives | The N-API surface — every module in the table below                                    | 25,000 |
-| pi-walker  | Parallel walker · listing cache · glob · regex search for natives and shell rg/grep/fd | 11,400 |
-| pi-iso     | Workspace isolation · apfs · btrfs · zfs · reflink · overlayfs · projfs · rcopy        |  3,300 |
-| pi-ast     | tree-sitter + ast-grep matching, block resolution, structural summaries                |  2,900 |
-| pi-voice   | Audio capture/playback · Opus · live WebRTC                                            |  1,000 |
+| Crate      | What it does                                                                                    |
+| ---------- | ----------------------------------------------------------------------------------------------- |
+| pi-shell   | Embedded Bash parser/VM · persistent sessions · execution traces · utility dispatch · minimizer |
+| pi-natives | N-API bindings and platform addon                                                               |
+| pi-walker  | Parallel walker · listing cache · glob · regex search for natives and shell rg/grep/fd          |
+| pi-iso     | Workspace isolation · apfs · btrfs · zfs · reflink · overlayfs · projfs · rcopy                 |
+| pi-ast     | tree-sitter + ast-grep matching, block resolution and structural summaries                      |
+| pi-voice   | Audio capture/playback · Opus · live WebRTC                                                     |
 
 Inside `pi-natives`, the per-module breakdown (glue and tests omitted):
 
@@ -686,17 +686,16 @@ commit are separate measurements; these budgets neither enlarge the compressed
 
 ### Rust Crates
 
-| Crate                                      | Description                                                                                              |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| **[pi-natives](crates/pi-natives)**        | Core Rust native addon (N-API `cdylib`) used by `@oh-my-pi/pi-natives`; aggregates the crates below      |
-| **[pi-shell](crates/pi-shell)**            | Embedded shell / PTY / process management split out of `pi-natives` (wraps `brush-*`)                    |
-| **[pi-ast](crates/pi-ast)**                | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                              |
-| **[pi-iso](crates/pi-iso)**                | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy               |
-| **[pi-voice](crates/pi-voice)**            | Audio capture/playback, Opus codecs, and live WebRTC streaming primitives                                |
-| **[pi-walker](crates/pi-walker)**          | Parallel ignore-aware walker, directory-listing cache, glob, and content search for natives + shell      |
-| **[pi-edit](crates/pi-edit)**              | Edit engine behind the `edit` tool: line-anchored patch/hashline modes, streaming previews, atomic apply |
-| **[brush-core](crates/vendor/brush-core)** | Vendored fork of [brush-shell](https://github.com/reubeno/brush) for embedded bash execution             |
-| **[pi-builtins](crates/pi-builtins)**      | Bash builtins (cd, echo, test, printf, read, export, …) plus 67 in-process command-line utilities        |
+| Crate                                 | Description                                                                                              |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **[pi-natives](crates/pi-natives)**   | Core Rust native addon (N-API `cdylib`) used by `@oh-my-pi/pi-natives`; aggregates the crates below      |
+| **[pi-shell](crates/pi-shell)**       | Embedded Bash parser/VM, persistent sessions, execution traces, and process management                   |
+| **[pi-ast](crates/pi-ast)**           | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                              |
+| **[pi-iso](crates/pi-iso)**           | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy               |
+| **[pi-voice](crates/pi-voice)**       | Audio capture/playback, Opus codecs, and live WebRTC streaming primitives                                |
+| **[pi-walker](crates/pi-walker)**     | Parallel ignore-aware walker, directory-listing cache, glob, and content search for natives + shell      |
+| **[pi-edit](crates/pi-edit)**         | Edit engine behind the `edit` tool: line-anchored patch/hashline modes, streaming previews, atomic apply |
+| **[pi-builtins](crates/pi-builtins)** | In-process utility and process commands used by the embedded shell                                       |
 
 ## Contributing
 
@@ -711,8 +710,8 @@ guidelines on contributing.
 
 OMP is licensed under the [MIT License](LICENSE).
 
-Third-party and vendored code, including `crates/vendor/brush-core` and the
-third-party portions identified in `crates/pi-builtins/LICENSE`, remains under
+Third-party and vendored code, including the portions identified in
+`crates/pi-builtins/LICENSE`, remains under
 its respective upstream license. Each shipped component carries its own
 `THIRD-PARTY-NOTICES.txt`: the CLI (`packages/coding-agent`), the native addon
 (`packages/natives`), and robomp (`python/robomp`). `omp --license` prints the

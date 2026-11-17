@@ -2614,11 +2614,5 @@ mod tests {
 	}
 }
 
-use brush_core::{ShellExtensions, builtins::Registration};
 
-use crate::host::async_util;
 
-/// Creates the ripgrep-compatible `rg` builtin registration.
-pub(crate) fn rg_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	async_util::<Rg, SE>()
-}

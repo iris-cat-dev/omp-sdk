@@ -24,9 +24,11 @@ const RUST_AFFECTING_FILE_NAMES = [
 // warnings like everything else.
 const VENDORED_FORK_EXCLUDES = [
 	"--exclude",
-	"brush-core",
+	"jaq-core",
 	"--exclude",
-	"brush-parser",
+	"jaq-json",
+	"--exclude",
+	"jaq-std",
 	"--exclude",
 	"cfg_aliases",
 	"--exclude",

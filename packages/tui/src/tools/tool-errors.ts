@@ -1,10 +1,13 @@
+import { AgentToolError } from "@oh-my-pi/pi-agent-core";
+
 /** Structured tool failure shared by selector parsing and host tool execution. */
-export class ToolError extends Error {
+export class ToolError<T = unknown> extends AgentToolError<T> {
 	constructor(
 		message: string,
 		readonly context?: Record<string, unknown>,
+		details?: T,
 	) {
-		super(message);
+		super(message, undefined, details);
 		this.name = "ToolError";
 	}
 

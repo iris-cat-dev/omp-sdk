@@ -34,7 +34,7 @@
 
 There is no `env` input. Every command and named service also gets `PI_SESSION_ID` and `PI_SESSION_FILE` (the transcript's absolute path, empty when the session is not persisted), read when the call starts; see [environment variables](../environment-variables.md#set-by-the-bash-tool). Named services otherwise inherit the configured shell environment; put command-specific assignments in `command`.
 
-Without `name`, `pty`, or a client terminal, commands run in the embedded POSIX-compatible brush shell, even when `shellPath` points to PowerShell or another external shell. `shellPath` selects the external shell for named services, supported terminal routes, and interactive `!` commands; a bash path may still supply environment and rc snapshots to the embedded session. To use PowerShell syntax in a plain tool call, invoke `pwsh -Command '...'` explicitly, quoting so brush preserves PowerShell's `$` variables.
+Without `name`, `pty`, or a client terminal, commands run in the embedded POSIX-compatible `pi-shell` Bash engine, even when `shellPath` points to PowerShell or another external shell. `shellPath` selects the external shell for named services, supported terminal routes, and interactive `!` commands; a bash path may still supply environment and rc snapshots to the embedded session. To use PowerShell syntax in a plain tool call, invoke `pwsh -Command '...'` explicitly, quoting so the embedded shell preserves PowerShell's `$` variables.
 
 Named service example:
 
@@ -55,6 +55,7 @@ The tool returns a `text` content block plus optional `details` and image blocks
    - `details.exitCode`: present when the command completed with a non-zero exit code.
    - `details.timedOut: true`: present on local, PTY, and client-terminal timeout results.
    - `details.meta.truncation`: present when output was truncated in memory; includes `artifactId` when full output spilled to an artifact.
+   - `details.trace`: bounded native execution snapshot for embedded-shell calls, including command state, source byte ranges, output producer attribution, and the real terminal status when available.
    - non-zero exits and timeouts return a tool result marked `isError`; definite non-zero output ends with `Command exited with code <n>`.
 - Success, background start (`async: true` or auto-background):
    - `content[0].text`: optional preview tail and notices, followed by `Backgrounded as job <id> (killed once it has run <n>s in total; …)` — or `(no deadline)` under `timeout: 0` — and the no-polling instruction (`formatBackgroundNotice` in `packages/tui/src/tools/bash.ts`), so the model sees the job's deadline before it waits on the result. The deadline counts from job start, so an auto-backgrounded command has already spent its foreground wait.
@@ -67,6 +68,8 @@ The tool returns a `text` content block plus optional `details` and image blocks
    - completion/failure updates carry final text and `details.async.state: "completed" | "failed"`. A non-zero exit or timeout is recorded as a failed background job.
 - Failure:
    - cancellation, missing exit status, validation failures, and intercepted commands throw `ToolError` / `ToolAbortError`; timeouts return an error result.
+
+Embedded-shell `onUpdate` frames publish changed `details.trace` snapshots alongside live output. Managed background jobs retain the same trace in their progress and final details. Cancelled tool errors preserve the last snapshot with `cancelled: true`; they do not invent a native terminal status before the engine has settled. PTY, client-terminal, and named-service routes keep their existing output contracts.
 
 Stdout and stderr are merged before the model sees them. Definite non-zero exit codes are appended to the returned error result text as `Command exited with code <n>`.
 

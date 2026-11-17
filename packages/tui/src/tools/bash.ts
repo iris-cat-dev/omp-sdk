@@ -26,7 +26,7 @@ import type {
 	RenderResultOptions,
 	ToolRenderer,
 } from "./renderer";
-import { INTENT_FIELD, type TspTone } from "@oh-my-pi/pi-wire";
+import { INTENT_FIELD, type ShellTrace, type TspTone } from "@oh-my-pi/pi-wire";
 import { plainText } from "../native/spans";
 import { resultText, runBox, runFoot, runInput, runOutput, type RunState } from "./native-view";
 
@@ -59,6 +59,8 @@ function isBackgroundNotice(line: string, jobId: string): boolean {
 /** Shell execution metadata used by transcript rendering. */
 export interface BashToolDetails {
 	meta?: OutputMeta;
+	/** Complete bounded native execution snapshot, independent of text rendering. */
+	trace?: ShellTrace;
 	timeoutSeconds?: number;
 	requestedTimeoutSeconds?: number;
 	timeoutDisabled?: boolean;
@@ -69,6 +71,8 @@ export interface BashToolDetails {
 	exitCode?: number;
 	/** True when the command was killed by its timeout deadline (not a failure). */
 	timedOut?: boolean;
+	/** True for a user/system cancellation; timeouts keep `timedOut` instead. */
+	cancelled?: boolean;
 	/** Text the command wrote to `out://`, oldest first; transcripts draw each as a reply after the call. */
 	replies?: string[];
 	/** Live ACP update only; completed results refer to released terminals. */

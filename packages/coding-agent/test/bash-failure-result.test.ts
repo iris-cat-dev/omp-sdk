@@ -9,6 +9,8 @@ import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import { Shell } from "@oh-my-pi/pi-natives";
 import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import { bashToolRenderer } from "@oh-my-pi/pi-tui/tools/bash";
+import { isShellTrace } from "@oh-my-pi/pi-wire";
+import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 
 afterEach(() => {
 	mock.restore();
@@ -80,6 +82,8 @@ describe("BashTool execution results", () => {
 		expect(result.details?.exitCode).toBe(3);
 		expect(result.details?.timeoutSeconds).toBe(300);
 		expect(typeof result.details?.wallTimeMs).toBe("number");
+		expect(isShellTrace(result.details?.trace)).toBe(true);
+		expect(result.details?.trace?.status).toBe(3);
 
 		// The LLM-facing text still states the exit code verbatim.
 		const text = result.content.find(c => c.type === "text")?.text ?? "";
@@ -98,6 +102,7 @@ describe("BashTool execution results", () => {
 
 		expect(result.isError).toBe(true);
 		expect(result.details?.timedOut).toBe(true);
+		expect(isShellTrace(result.details?.trace)).toBe(true);
 		const text = result.content.find(c => c.type === "text")?.text ?? "";
 		expect(text.match(/\[Command timed out after 1 seconds\]/gu)).toHaveLength(1);
 	});
@@ -117,6 +122,8 @@ describe("BashTool execution results", () => {
 
 		const error = await execution.catch(error => error);
 		expect(error).toBeInstanceOf(Error);
+		expect(error).toBeInstanceOf(ToolAbortError);
+		expect(error).toMatchObject({ details: { cancelled: true, trace: { v: 1 } } });
 		const message = (error as Error).message;
 		expect(message.match(/\[Command cancelled\]/gu)).toHaveLength(1);
 		expect(message).not.toContain("Command aborted");
@@ -128,6 +135,8 @@ describe("BashTool execution results", () => {
 
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.exitCode).toBeUndefined();
+		expect(isShellTrace(result.details?.trace)).toBe(true);
+		expect(result.details?.trace?.status).toBe(0);
 		const text = result.content.find(c => c.type === "text")?.text ?? "";
 		expect(text).toContain("hi");
 		expect(text).not.toContain("Command exited with code");

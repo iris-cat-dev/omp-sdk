@@ -18,6 +18,7 @@ import { encodeTerminalImage } from "@oh-my-pi/pi-coding-agent/utils/terminal-gr
 import type { Shell, ShellRunResult } from "@oh-my-pi/pi-natives";
 import * as piNatives from "@oh-my-pi/pi-natives";
 import { $which, removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { isShellTrace, type ShellTrace } from "@oh-my-pi/pi-wire";
 
 import { cfgBashDirenvLoadTimeoutMs, cfgShellPath } from "@oh-my-pi/pi-coding-agent/exec/settings";
 
@@ -102,6 +103,112 @@ describe("executeBash", () => {
 		if (fs.existsSync(tempDir)) {
 			removeSyncWithRetries(tempDir);
 		}
+	});
+
+	it("streams real execution states independently of readable output and stops at the final snapshot", async () => {
+		const traces: ShellTrace[] = [];
+		const previews: string[] = [];
+		const result = await executeBash("printf before; sleep 0.25; printf after", {
+			cwd: tempDir,
+			timeout: 5000,
+			onTrace: trace => traces.push(trace),
+			onPreview: text => previews.push(text),
+		});
+		expect(traces.some(trace => trace.units.some(unit => unit.nodes.some(node => node.state === "running")))).toBe(
+			true,
+		);
+		expect(previews.some(text => text.includes("before"))).toBe(true);
+		expect(result.output).toBe("beforeafter");
+		expect(isShellTrace(result.trace)).toBe(true);
+		expect(result.trace?.status).toBe(0);
+		expect(traces.at(-1)).toBe(result.trace);
+		const revisions = traces.map(trace => trace.seq);
+		expect(revisions.every((seq, index) => index === 0 || seq >= revisions[index - 1]!)).toBe(true);
+		const count = traces.length;
+		const settled = JSON.stringify(result.trace);
+		// Real native output and a live 80ms interval: fake clocks cannot drive the shell's lifecycle.
+		await Bun.sleep(180);
+		expect(traces).toHaveLength(count);
+		expect(JSON.stringify(result.trace)).toBe(settled);
+	});
+
+	it("retains non-UTF-8 command bytes without rejecting the native snapshot", async () => {
+		const result = await executeBash("value=$(printf '\\377'); printf '%s' \"$value\"", {
+			cwd: tempDir,
+			timeout: 5000,
+			onTrace: () => {},
+		});
+		expect(isShellTrace(result.trace)).toBe(true);
+		expect(
+			result.trace?.history?.some(
+				event => event.kind === "Assign" && Array.isArray(event.value) && event.value.includes(255),
+			),
+		).toBe(true);
+		expect(result.trace?.status).toBe(0);
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"bounds the real replay output independently of artifact truncation",
+		async () => {
+			const result = await executeBash("head -c 2300000 /dev/zero | tr '\\000' x", {
+				cwd: tempDir,
+				timeout: 10_000,
+				onTrace: () => {},
+			});
+			expect(isShellTrace(result.trace)).toBe(true);
+			expect(result.trace?.historyTruncated).toBe(true);
+			expect(result.trace?.history?.length ?? 0).toBeLessThanOrEqual(20_000);
+			const bytes =
+				result.trace?.history?.reduce(
+					(total, event) =>
+						total +
+						(event.kind === "Output" && typeof event.text === "string" ? Buffer.byteLength(event.text) : 0),
+					0,
+				) ?? 0;
+			expect(bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
+			expect(result.totalBytes).toBe(2_300_000);
+			expect(result.trace?.status).toBe(0);
+		},
+	);
+
+	it("freezes the last cancellation observation without delaying native cleanup", async () => {
+		const controller = new AbortController();
+		const running = Promise.withResolvers<void>();
+		const traces: ShellTrace[] = [];
+		const execution = executeBash("printf ready; sleep 3", {
+			cwd: tempDir,
+			timeout: 0,
+			signal: controller.signal,
+			onTrace: trace => {
+				traces.push(trace);
+				if (trace.units.some(unit => unit.nodes.some(node => node.state === "running"))) running.resolve();
+			},
+		});
+		await running.promise;
+		controller.abort();
+		const result = await execution;
+		expect(result.cancelled).toBe(true);
+		expect(result.timedOut).toBeUndefined();
+		expect(isShellTrace(result.trace)).toBe(true);
+		expect(traces.at(-1)).toBe(result.trace);
+		const count = traces.length;
+		const observation = JSON.stringify(result.trace);
+		// The native run may still drain after the fast abort; its returned JSON must remain frozen.
+		await Bun.sleep(180);
+		expect(traces).toHaveLength(count);
+		expect(JSON.stringify(result.trace)).toBe(observation);
+	});
+
+	it("keeps real execution alive when a timer snapshot cannot be decoded", async () => {
+		vi.spyOn(piNatives.RunTrace.prototype, "snapshot").mockImplementationOnce(() => "{");
+		const result = await executeBash("printf before; sleep 0.25; printf after", {
+			cwd: tempDir,
+			timeout: 5000,
+			onTrace: () => {},
+		});
+		expect(result.output).toBe("beforeafter");
+		expect(result.exitCode).toBe(0);
+		expect(isShellTrace(result.trace)).toBe(true);
 	});
 
 	it("omits minimizer options when the feature is disabled", () => {
@@ -1205,27 +1312,19 @@ exit 64
 		const bashPath = Bun.env.SHELL?.includes("bash") ? Bun.env.SHELL : "/bin/bash";
 		if (!fs.existsSync(bashPath)) return;
 
-		// Pre-seed a snapshot that mirrors Fedora's default `which` alias.
-		// Without the brush-compat scrub, brush's whitespace-only alias
-		// expander turns `(alias;` into the command name and `which` fails
-		// with `command not found: (alias;`. With the scrub, the broken
-		// alias is dropped and brush falls through to `$PATH`.
+		// The native bash engine parses compound alias bodies rather than
+		// dropping user aliases through the old whitespace-only compatibility scrub.
 		const snapshotPath = path.join(tempDir, "snapshot.sh");
 		fs.writeFileSync(
 			snapshotPath,
 			[
 				"unalias -a 2>/dev/null || true",
-				"alias -- which='(alias; declare -f) | /usr/bin/which --tty-only --read-alias --show-dot --show-tilde'",
-				"alias -- ll='ls -l'",
+				"shopt -s expand_aliases",
+				"alias -- compound='(printf hi; printf there) | cat'",
+				"alias -- simple='printf simple'",
 				"",
 			].join("\n"),
 		);
-		const rawSnapshot = fs.readFileSync(snapshotPath, "utf8");
-		const { content: scrubbed, dropped } = shellSnapshot.sanitizeSnapshotForBrush(rawSnapshot);
-		fs.writeFileSync(snapshotPath, scrubbed);
-		expect(dropped).toEqual(["which"]);
-		// Compatible aliases must still be installed in brush.
-		expect(scrubbed).toContain("alias -- ll='ls -l'");
 
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
 			shell: bashPath,
@@ -1235,16 +1334,16 @@ exit 64
 		});
 		vi.spyOn(shellSnapshot, "getOrCreateSnapshot").mockResolvedValue(snapshotPath);
 
-		const result = await executeBash("which sh", {
+		const result = await executeBash("compound; simple", {
 			cwd: tempDir,
 			timeout: 5000,
-			sessionKey: "brush-compound-alias-which",
+			sessionKey: "native-compound-alias",
 		});
 
 		expect(result.cancelled).toBe(false);
 		expect(result.exitCode).toBe(0);
 		expect(result.output).not.toContain("command not found");
-		expect(result.output.trim()).toMatch(/\/sh$/);
+		expect(result.output).toBe("hitheresimple");
 	});
 
 	it("does not allow exec to replace the host", async () => {

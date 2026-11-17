@@ -18,7 +18,7 @@ import {
 } from "@oh-my-pi/pi-ai/auth-broker";
 import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
 import { ProxyPolicyController, proxyFetch, withProxyPolicy } from "@oh-my-pi/pi-ai/utils/proxy";
-import { logger } from "@oh-my-pi/pi-utils";
+import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import { removeWithRetries } from "../../utils/src/temp";
 
 const ANTHROPIC_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"] as const;
@@ -538,7 +538,9 @@ describe("auth-broker wire surface", () => {
 					return;
 				}
 				exchanges++;
-				socket.end(`HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${payload.length}\r\n\r\n${payload}`);
+				socket.end(
+					`HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${payload.length}\r\n\r\n${payload}`,
+				);
 			});
 		});
 		const listening = Promise.withResolvers<void>();
@@ -548,24 +550,40 @@ describe("auth-broker wire surface", () => {
 		const address = proxy.address();
 		if (!address || typeof address === "string") throw new Error("Expected proxy listener");
 		vi.spyOn(oauthUtils, "refreshOAuthToken").mockImplementation(async provider => {
-			const response = await proxyFetch(provider)("http://oauth-provider.invalid/token", { signal: AbortSignal.timeout(1_500) });
-			return response.json();
+			const response = await proxyFetch(provider)("http://oauth-provider.invalid/token", {
+				signal: AbortSignal.timeout(1_500),
+			});
+			const value = await response.json();
+			if (
+				!isRecord(value) ||
+				typeof value.access !== "string" ||
+				typeof value.refresh !== "string" ||
+				typeof value.expires !== "number"
+			) {
+				throw new Error("Expected OAuth credentials from the proxy fixture");
+			}
+			return { access: value.access, refresh: value.refresh, expires: value.expires };
 		});
 		const client = new AuthBrokerClient({ url: handle!.url, token });
 		const snapshot = await client.fetchSnapshot();
 		if (snapshot.status !== 200) throw new Error("Expected snapshot");
-		const controller = new ProxyPolicyController({ enabled: true, providers: {
-			anthropic: { mode: "proxy", url: `http://127.0.0.1:${address.port}` },
-		} });
+		const controller = new ProxyPolicyController({
+			enabled: true,
+			providers: {
+				anthropic: { mode: "proxy", url: `http://127.0.0.1:${address.port}` },
+			},
+		});
 		try {
-			const result = await withProxyPolicy(controller, () => client.refreshCredential(snapshot.snapshot.credentials[0].id));
+			const result = await withProxyPolicy(controller, () =>
+				client.refreshCredential(snapshot.snapshot.credentials[0].id),
+			);
 			expect(exchanges).toBe(1);
 			expect(result.entry.credential.type === "oauth" && result.entry.credential.access).toBe("proxied-access");
 			expect(store!.getOAuth("anthropic")?.refresh).toBe("proxied-refresh");
 		} finally {
 			for (const socket of sockets) socket.destroy();
 			const closed = Promise.withResolvers<void>();
-			proxy.close(error => error ? closed.reject(error) : closed.resolve());
+			proxy.close(error => (error ? closed.reject(error) : closed.resolve()));
 			await closed.promise;
 		}
 	});

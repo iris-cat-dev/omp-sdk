@@ -38,7 +38,7 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@oh-my-pi/pi-ai/types";
-import { __resetProxyCache } from "@oh-my-pi/pi-ai/utils/proxy";
+import { ProxyPolicyController, withProxyPolicy } from "@oh-my-pi/pi-ai/utils/proxy";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveCatalogPolicy } from "@oh-my-pi/pi-catalog/compat/catalog-policy";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
@@ -3792,15 +3792,16 @@ describe("Amazon Bedrock compaction request preparation", () => {
 			provider: "compaction-proxy-test",
 			baseUrl: runtimeUrl,
 		});
-		const previous = Bun.env.PI_PROXY_COMPACTION_PROXY_TEST;
-		Bun.env.PI_PROXY_COMPACTION_PROXY_TEST = "http://proxy.example.test:8080";
-		__resetProxyCache();
+		const policy = new ProxyPolicyController({
+			enabled: true,
+			providers: { "compaction-proxy-test": { mode: "proxy", url: "http://proxy.example.test:8080" } },
+		});
 		const proxies: unknown[] = [];
 		const fetchMock: FetchImpl = async (input, init) => {
 			proxies.push((init as { proxy?: unknown } | undefined)?.proxy);
 			return String(input).endsWith("/compact") ? compactionResponse() : v2Response();
 		};
-		try {
+		await withProxyPolicy(policy, async () => {
 			await requestOpenAiRemoteCompaction(model, "test-key", nativeInput, "instructions", undefined, {
 				fetch: fetchMock,
 			});
@@ -3811,12 +3812,11 @@ describe("Amazon Bedrock compaction request preparation", () => {
 				undefined,
 				{ fetch: fetchMock },
 			);
-		} finally {
-			if (previous === undefined) delete Bun.env.PI_PROXY_COMPACTION_PROXY_TEST;
-			else Bun.env.PI_PROXY_COMPACTION_PROXY_TEST = previous;
-			__resetProxyCache();
-		}
+		});
 
-		expect(proxies).toEqual(["http://proxy.example.test:8080", "http://proxy.example.test:8080"]);
+		expect(proxies.map(proxy => new URL(String(proxy)).origin)).toEqual([
+			"http://proxy.example.test:8080",
+			"http://proxy.example.test:8080",
+		]);
 	});
 });

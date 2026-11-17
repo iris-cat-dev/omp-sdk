@@ -101,12 +101,17 @@ describe("ProxyPolicyController", () => {
 
 	it("isolates concurrent async sessions and retains provider context", async () => {
 		const a = new ProxyPolicyController({ enabled: true, providers: { provider: { mode: "proxy", url: PROXY } } });
-		const b = new ProxyPolicyController({ enabled: true, default: { mode: "proxy", url: "http://other.example:8080/" } });
+		const b = new ProxyPolicyController({
+			enabled: true,
+			default: { mode: "proxy", url: "http://other.example:8080/" },
+		});
 		const barrier = Promise.withResolvers<void>();
-		const first = withProxyPolicy(a, () => withProxyProvider("provider", async () => {
-			await barrier.promise;
-			return getProxyForProvider();
-		}));
+		const first = withProxyPolicy(a, () =>
+			withProxyProvider("provider", async () => {
+				await barrier.promise;
+				return getProxyForProvider();
+			}),
+		);
 		const second = withProxyPolicy(b, async () => {
 			barrier.resolve();
 			await Promise.resolve();
@@ -171,7 +176,11 @@ describe("isLocalOrMetadataHost / shouldBypassProxy hard-coded ranges", () => {
 
 describe("policy bypass rules", () => {
 	it("matches suffixes, ports, wildcard, and secure websocket ports", () => {
-		const controller = new ProxyPolicyController({ enabled: true, default: { mode: "proxy", url: PROXY }, noProxy: [".sakana.ai", "api.openai.com:443"] });
+		const controller = new ProxyPolicyController({
+			enabled: true,
+			default: { mode: "proxy", url: PROXY },
+			noProxy: [".sakana.ai", "api.openai.com:443"],
+		});
 		withProxyPolicy(controller, () => {
 			expect(shouldBypassProxy(new URL("https://api.sakana.ai/v1"))).toBe(true);
 			expect(shouldBypassProxy(new URL("https://sakana.ai/v1"))).toBe(true);
@@ -213,11 +222,13 @@ async function responseProxy(label: string) {
 	if (!address || typeof address === "string") throw new Error("Expected TCP proxy");
 	return {
 		url: `http://127.0.0.1:${address.port}/`,
-		get requests() { return requests; },
+		get requests() {
+			return requests;
+		},
 		async close() {
 			for (const socket of sockets) socket.destroy();
 			const closed = Promise.withResolvers<void>();
-			server.close(error => error ? closed.reject(error) : closed.resolve());
+			server.close(error => (error ? closed.reject(error) : closed.resolve()));
 			await closed.promise;
 		},
 	};
@@ -227,9 +238,13 @@ describe("SDK proxy fetch wire routing", () => {
 	it("switches the same fetch A → B → direct, with independent providers", async () => {
 		const a = await responseProxy("route-a");
 		const b = await responseProxy("route-b");
-		const controller = new ProxyPolicyController({ enabled: true, providers: {
-			alpha: { mode: "proxy", url: a.url }, beta: { mode: "proxy", url: b.url },
-		} });
+		const controller = new ProxyPolicyController({
+			enabled: true,
+			providers: {
+				alpha: { mode: "proxy", url: a.url },
+				beta: { mode: "proxy", url: b.url },
+			},
+		});
 		const fetchAlpha = proxyFetch("alpha");
 		const fetchBeta = proxyFetch("beta");
 		try {
@@ -239,7 +254,9 @@ describe("SDK proxy fetch wire routing", () => {
 				controller.setPolicy({ enabled: true, providers: { alpha: { mode: "proxy", url: b.url } } });
 				expect(await (await fetchAlpha("http://provider.invalid/request")).text()).toBe("route-b");
 				controller.setPolicy({ ...controller.getPolicy(), enabled: false });
-				await expect(fetchAlpha("http://provider.invalid/request", { signal: AbortSignal.timeout(1_000) })).rejects.toThrow();
+				await expect(
+					fetchAlpha("http://provider.invalid/request", { signal: AbortSignal.timeout(1_000) }),
+				).rejects.toThrow();
 			});
 			expect(a.requests).toBe(1);
 			expect(b.requests).toBe(2);
@@ -251,13 +268,17 @@ describe("SDK proxy fetch wire routing", () => {
 
 	it("does not fall back to ambient standard proxies when disabled", async () => {
 		const ambient = await responseProxy("ambient-proxy");
-		const saved = Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"].map(key => [key, process.env[key]]));
+		const saved = Object.fromEntries(
+			["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"].map(key => [key, process.env[key]]),
+		);
 		try {
 			process.env.HTTP_PROXY = ambient.url;
 			process.env.HTTPS_PROXY = ambient.url;
 			process.env.ALL_PROXY = ambient.url;
 			process.env.NO_PROXY = "";
-			await expect(proxyFetch()("http://provider.invalid/request", { signal: AbortSignal.timeout(1_000) })).rejects.toThrow();
+			await expect(
+				proxyFetch()("http://provider.invalid/request", { signal: AbortSignal.timeout(1_000) }),
+			).rejects.toThrow();
 			expect(ambient.requests).toBe(0);
 		} finally {
 			for (const [key, value] of Object.entries(saved)) {
@@ -274,7 +295,9 @@ describe("SDK proxy fetch wire routing", () => {
 		const server = net.createServer(connection => {
 			connections.add(connection);
 			connection.once("close", () => connections.delete(connection));
-			connection.once("data", () => connection.end("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 12\r\n\r\nlocal broker"));
+			connection.once("data", () =>
+				connection.end("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 12\r\n\r\nlocal broker"),
+			);
 		});
 		const listening = Promise.withResolvers<void>();
 		server.once("error", listening.reject);
@@ -282,12 +305,13 @@ describe("SDK proxy fetch wire routing", () => {
 		await listening.promise;
 		try {
 			const controller = new ProxyPolicyController({ enabled: true, default: { mode: "proxy", url: PROXY } });
-			const response = await withProxyPolicy(controller, () => proxyFetch()("http://broker.invalid/info", { unix: socket, signal: AbortSignal.timeout(1_500) }));
+			const init = { unix: socket, signal: AbortSignal.timeout(1_500) };
+			const response = await withProxyPolicy(controller, () => proxyFetch()("http://broker.invalid/info", init));
 			expect(await response.text()).toBe("local broker");
 		} finally {
 			for (const connection of connections) connection.destroy();
 			const closed = Promise.withResolvers<void>();
-			server.close(error => error ? closed.reject(error) : closed.resolve());
+			server.close(error => (error ? closed.reject(error) : closed.resolve()));
 			await closed.promise;
 		}
 	});

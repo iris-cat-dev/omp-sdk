@@ -33,6 +33,7 @@ const BUNDLED_PACKAGES: readonly BundledPackage[] = [
 	// root-level and nested modules; extensions must share the host's records.
 	{ dir: "tui", identifier: "PiTui", rootShim: "legacy-pi-tui-shim.ts", rootWildcard: "nested" },
 	{ dir: "utils", identifier: "PiUtils", rootShim: null, rootWildcard: null },
+	{ dir: "wire", identifier: "PiWire", rootShim: null, rootWildcard: "flat" },
 ];
 
 const TYPEBOX_MODULE_KEY = "typebox";

@@ -260,22 +260,14 @@ pub fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 }
 
 /// Intern tokens as dense ids under exact equality.
-pub fn intern<T: Eq + Hash + Copy>(old: &[T], new: &[T]) -> (Vec<u32>, Vec<u32>) {
+pub fn intern<T: Eq + Hash>(old: &[T], new: &[T]) -> (Vec<u32>, Vec<u32>) {
 	fn assign<T: Eq + Hash + Copy>(ids: &mut HashMap<T, u32>, token: T) -> u32 {
 		let next = ids.len() as u32;
 		*ids.entry(token).or_insert(next)
 	}
 	let mut ids = HashMap::with_capacity(old.len() + new.len());
-	let old_ids = old
-		.iter()
-		.copied()
-		.map(|token| assign(&mut ids, token))
-		.collect();
-	let new_ids = new
-		.iter()
-		.copied()
-		.map(|token| assign(&mut ids, token))
-		.collect();
+	let old_ids = old.iter().map(|token| assign(&mut ids, token)).collect();
+	let new_ids = new.iter().map(|token| assign(&mut ids, token)).collect();
 	(old_ids, new_ids)
 }
 
@@ -334,7 +326,7 @@ pub fn line_tokens_str(text: &str) -> Vec<&str> {
 
 /// Myers runs over pre-split line tokens, so callers that also need the token
 /// slices for rendering split each text only once.
-pub fn diff_line_tokens<T: Eq + Hash + Copy>(old_tokens: &[T], new_tokens: &[T]) -> Vec<Run> {
+pub fn diff_line_tokens<T: Eq + Hash>(old_tokens: &[T], new_tokens: &[T]) -> Vec<Run> {
 	let (old_ids, new_ids) = intern(old_tokens, new_tokens);
 	myers_diff(&old_ids, &new_ids)
 }

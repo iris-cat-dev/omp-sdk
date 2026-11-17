@@ -11,6 +11,7 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 } from "@oh-my-pi/pi-agent-core";
+import { AgentToolError } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import type { Setting } from "../config/registry";
@@ -767,8 +768,16 @@ async function wrappedExecute(
 		}
 		return result;
 	} catch (e) {
-		// Re-throw with formatted message so agent-loop sets isError flag
-		throw new Error(renderError(e));
+		// Preserve typed execution metadata and abort identity at the public tool
+		// boundary; formatting must not flatten a traced cancellation into Error.
+		const message = renderError(e);
+		if (e instanceof AgentToolError) {
+			if (message === e.message) throw e;
+			const formatted = new AgentToolError(message, { cause: e }, e.details);
+			formatted.name = e.name;
+			throw formatted;
+		}
+		throw new Error(message);
 	}
 }
 

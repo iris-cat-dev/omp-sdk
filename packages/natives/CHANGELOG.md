@@ -4,12 +4,14 @@
 
 ### Added
 
+- Added `RunTrace`, `ShellVisualization`, `shellBuiltins`, and `ShellRunOptions.trace` backed by the new embedded Bash parser/VM, replacing the vendored Brush runtime while retaining persistent sessions and owned Stop cleanup.
 - Added default-on native Cargo features and isolated Desktop builds; generic SDK and Bun CLI defaults retain the full native feature set.
 - Added binary capability reporting so integrations can distinguish disabled native features from the full default build.
 - Added isolated incremental Desktop development builds using the local Cargo profile without changing release capabilities or CPU baselines.
 
 ### Fixed
 
+- Fixed cancellation leaving native trace commands running after the real run ended; active commands now emit their own signal-status `CmdEnd` before `RunEnd`, including nested functions and loops.
 - Fixed native addon package loading under Node.js and Electron.
 - Fixed Windows Desktop addon builds failing with `EPERM` during temporary-directory cleanup by validating the installed addon instead of loading the temporary DLL.
 - Fixed background Windows Git operations and native CPU probing opening console windows.
