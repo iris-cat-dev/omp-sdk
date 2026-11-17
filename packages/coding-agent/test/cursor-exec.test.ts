@@ -2512,6 +2512,20 @@ describe("CursorExecHandlers Pi frame translation", () => {
 		expect(calls.map(call => (call as { skip?: number }).skip)).toEqual([20, undefined, undefined]);
 	});
 
+	it("maps legacy Cursor Glob frames onto the local glob tool", async () => {
+		const { handlers, calls } = recordingHandlers("glob");
+
+		await handlers.legacyGlob({
+			toolCallId: "c1",
+			pattern: "",
+			path: "src",
+			glob: "**/*.{png,glb}",
+			headLimit: 25,
+		} as never);
+
+		expect(calls).toEqual([{ path: path.join("src", "**/*.{png,glb}"), limit: 25 }]);
+	});
+
 	it("returns exactly the lines a pi_read range asked for", async () => {
 		// Producer/consumer contract against the real `ReadTool`: a plain `:N+K`
 		// selector deliberately pads with one leading and three trailing context

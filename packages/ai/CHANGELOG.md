@@ -21,6 +21,7 @@
 ### Fixed
 
 - Fixed Cursor turns receiving hook-added context as the user's request and losing the turn's server records on continuation ([#19156](https://github.com/can1357/oh-my-pi/pull/19156) by [@anzhen-tech](https://github.com/anzhen-tech)).
+- Fixed legacy Cursor Glob calls being executed as content grep for `.`; filename searches now use the local glob tool, so empty and binary files are listed without reading every matching file.
 - Fixed Cursor turns failing when a TLS-intercepting CONNECT proxy resets the HTTP/2 handshake; successful HTTP/1 fallback is retained for subsequent turns to the same endpoint ([#17985](https://github.com/can1357/oh-my-pi/pull/17985) by [@breakwaterlabs](https://github.com/breakwaterlabs)).
 - Fixed native Cursor edits and exclusive MCP tools running out of batch order with shell and read calls ([#18434](https://github.com/can1357/oh-my-pi/pull/18434) by [@KadirBerkpolat1](https://github.com/KadirBerkpolat1), [#18502](https://github.com/can1357/oh-my-pi/pull/18502) by [@eggpeat](https://github.com/eggpeat)).
 - Fixed Ultrafast requests being omitted for custom OpenAI API providers using the official endpoint or an explicitly advertised tier, and preserved their served-tier echoes without applying OpenAI billing multipliers ([#3](https://github.com/iris-cat-dev/omp-sdk/pull/3) by [@Charlie-chulong](https://github.com/Charlie-chulong)).

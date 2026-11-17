@@ -1832,6 +1832,81 @@ describe("Cursor legacy read frame: range reporting", () => {
 });
 
 describe("Cursor legacy grep frame: offset reporting", () => {
+	it("routes legacy Glob frames to filename search without scanning file contents", async () => {
+		let grepCalls = 0;
+		let globCalls = 0;
+		const files = ["assets/empty.txt", "assets/image.png"];
+		const { frames, output, results } = await dispatchExec(
+			buildExecMessage({
+				case: "grepArgs",
+				value: create(GrepArgsSchema, {
+					pattern: "",
+					glob: "assets/**/*",
+					toolCallId: "legacy-glob",
+				}),
+			}),
+			{
+				execHandlers: {
+					async grep() {
+						grepCalls++;
+						return toolResult("content grep must not run");
+					},
+					async legacyGlob() {
+						globCalls++;
+						return toolResult(files.join("\n"), {
+							toolCallId: "legacy-glob",
+							toolName: "glob",
+							details: { files, truncated: false },
+						});
+					},
+				},
+			},
+		);
+
+		expect(grepCalls).toBe(0);
+		expect(globCalls).toBe(1);
+		expect(results[0]?.toolName).toBe("glob");
+		const call = output.content.find(block => block.type === "toolCall");
+		expect(call).toMatchObject({
+			name: "glob",
+			arguments: { path: "assets/**/*" },
+		});
+		const answer = soleResult(frames);
+		if (answer.case !== "grepResult" || answer.value.result.case !== "success") {
+			throw new Error("expected legacy Glob success through GrepResult");
+		}
+		expect(answer.value.result.value.outputMode).toBe("files_with_matches");
+		const result = answer.value.result.value.workspaceResults["."]?.result;
+		if (result?.case !== "files") throw new Error("expected filename result");
+		expect(result.value.files).toEqual(files);
+	});
+
+	it("still rejects an empty legacy Grep pattern when no glob is present", async () => {
+		let handlerCalls = 0;
+		const { frames, output } = await dispatchExec(
+			buildExecMessage({
+				case: "grepArgs",
+				value: create(GrepArgsSchema, { pattern: "", path: "src", toolCallId: "empty-grep" }),
+			}),
+			{
+				execHandlers: {
+					async grep() {
+						handlerCalls++;
+						return toolResult("must not run");
+					},
+				},
+			},
+		);
+
+		expect(handlerCalls).toBe(0);
+		expect(output.content.some(block => block.type === "toolCall")).toBe(false);
+		const answer = soleResult(frames);
+		if (answer.case !== "grepResult" || answer.value.result.case !== "error") {
+			throw new Error("expected empty Grep rejection");
+		}
+		expect(answer.value.result.value.error).toContain("grep pattern is required");
+	});
+
 	it("echoes the frame's offset back as offsetApplied", async () => {
 		// The field reports the offset this client actually applied, so it must
 		// track the frame's request rather than being left unset.
