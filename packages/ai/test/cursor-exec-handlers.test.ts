@@ -39,6 +39,8 @@ import { logger } from "@oh-my-pi/pi-utils";
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	// This setter is a host transport override, not a spy; restore the real provider explicitly.
+	setCursorProviderModule({ streamCursor });
 });
 
 const cursorModel: Model<"cursor-agent"> = buildModel({

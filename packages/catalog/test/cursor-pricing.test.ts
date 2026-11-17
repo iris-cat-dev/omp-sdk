@@ -1,5 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { buildModel } from "../src/build";
+import { calculateUsageCost, getEffectiveTokenCost } from "../src/models";
 import type { ModelSpec } from "../src/types";
 
 /** Zero-cost discovery spec, mirroring GetUsableModels (no pricing upstream). */
@@ -172,10 +173,46 @@ describe("cursor API-equivalent pricing", () => {
 		}
 	});
 
+	it.each(["gemini-4-argon", "gemini-4-carbon"])("switches %s pricing at midnight US Pacific on December 1", id => {
+		const priceSwitch = Date.parse("2026-12-01T08:00:00Z");
+		const intro = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 };
+		const list = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 0 };
+		const clock = spyOn(Date, "now");
+		try {
+			clock.mockReturnValue(priceSwitch - 1);
+			const early = buildModel(spec(id));
+			expect(early.cost).toMatchObject(intro);
+			clock.mockReturnValue(priceSwitch);
+			const late = buildModel(spec(id));
+			expect(late.cost).toMatchObject(list);
+			// Cached rows bill each request's timestamp, whichever card was current at build time.
+			for (const model of [early, late]) {
+				for (const [timestamp, rates] of [
+					[priceSwitch - 1, intro],
+					[priceSwitch, list],
+					[priceSwitch + 1, list],
+				] as const) {
+					expect(getEffectiveTokenCost(model.cost, timestamp)).toMatchObject(rates);
+					const usage = {
+						input: 1_000_000,
+						output: 1_000_000,
+						cacheRead: 1_000_000,
+						cacheWrite: 0,
+						totalTokens: 3_000_000,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					};
+					expect(calculateUsageCost(model.cost, usage, timestamp)).toMatchObject(rates);
+				}
+			}
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("prices every served catalog id; only docs-absent ids stay zero", () => {
 		// Snapshot of the Cursor roster on 2026-09-22, plus DeepSeek V4.1
-		// Flash 1017 (served from 2026-10-27). A newly served id without a
-		// cost-patch rule fails here instead of silently billing at zero.
+		// Flash 1017 (served from 2026-10-27) and Gemini 4 Carbon. A newly served
+		// id without a cost-patch rule fails here instead of silently billing at zero.
 		const servedIds = [
 			"claude-4-sonnet",
 			"claude-4.5-opus-high",
@@ -252,6 +289,7 @@ describe("cursor API-equivalent pricing", () => {
 			"gemini-3.7-flash",
 			"gemini-3.8-flash",
 			"gemini-4-argon",
+			"gemini-4-carbon",
 			"glm-5.2",
 			"gpt-5-mini",
 			"gpt-5.1",

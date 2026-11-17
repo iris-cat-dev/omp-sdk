@@ -8,6 +8,7 @@ import {
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
 	joinAdditionalContext,
+	resolveToolConcurrency,
 	TOOL_RESULT_ADDITIONAL_CONTEXT,
 	type ToolResultWithAdditionalContext,
 	validateAgentToolArguments,
@@ -501,6 +502,24 @@ function decodeMcpArgs(rawArgs: Record<string, Uint8Array>): Record<string, unkn
 		}
 	}
 	return decoded;
+}
+
+/** Use one argument map for execution, approval, and concurrency classification. */
+function mcpCallArgs(call: CursorMcpCall): Record<string, unknown> {
+	return Object.keys(call.args ?? {}).length > 0 ? call.args : decodeMcpArgs(call.rawArgs ?? {});
+}
+
+/** Resolve aliases and execution overrides to the tool this call will actually run. */
+function resolveMcpTool(
+	options: CursorExecBridgeOptions,
+	toolName: string,
+	args: Record<string, unknown>,
+): { tool: CursorBridgeTool | undefined; preferReplace: boolean } {
+	const preferReplace = cursorMcpPrefersReplaceEdit(toolName, args);
+	const tool = preferReplace
+		? options.getEditReplaceTool?.()
+		: (options.getExecutableTool?.(toolName) ?? options.tools.get(toolName));
+	return { tool, preferReplace };
 }
 
 function formatMcpToolErrorMessage(toolName: string, availableTools: string[]): string {
@@ -1075,17 +1094,16 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 	async mcp(call: CursorMcpCall) {
 		const toolName = call.toolName || call.name;
 		const toolCallId = decodeToolCallId(call.toolCallId);
-		const args = Object.keys(call.args ?? {}).length > 0 ? call.args : decodeMcpArgs(call.rawArgs ?? {});
-		if (cursorMcpPrefersReplaceEdit(toolName, args)) {
-			const replaceTool = this.options.getEditReplaceTool?.();
-			if (!replaceTool) {
+		const args = mcpCallArgs(call);
+		const { tool, preferReplace } = resolveMcpTool(this.options, toolName, args);
+		if (preferReplace) {
+			if (!tool) {
 				const availableTools = Array.from(this.options.tools.keys()).filter(name => name.startsWith("mcp__"));
 				const message = formatMcpToolErrorMessage(toolName, availableTools);
 				return createToolResultMessage(toolCallId, toolName, buildToolErrorResult(message), true);
 			}
-			return await executeTool(this.options, "edit", toolCallId, normalizeCursorReplaceArgs(args), replaceTool);
+			return await executeTool(this.options, "edit", toolCallId, normalizeCursorReplaceArgs(args), tool);
 		}
-		const tool = this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName);
 		if (!tool) {
 			const availableTools = Array.from(this.options.tools.keys()).filter(name => name.startsWith("mcp__"));
 			const message = formatMcpToolErrorMessage(toolName, availableTools);
@@ -1093,8 +1111,16 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			return createToolResultMessage(toolCallId, toolName, result, true);
 		}
 
-		const toolResultMessage = await executeTool(this.options, toolName, toolCallId, args);
+		const toolResultMessage = await executeTool(this.options, toolName, toolCallId, args, tool);
 		return toolResultMessage;
+	}
+
+	/** The bridge bypasses the agent scheduler, so resolve the same tool's batch mode here. */
+	mcpConcurrency(call: CursorMcpCall): "shared" | "exclusive" {
+		const toolName = call.toolName || call.name;
+		const args = mcpCallArgs(call);
+		const { tool, preferReplace } = resolveMcpTool(this.options, toolName, args);
+		return resolveToolConcurrency(tool, preferReplace ? normalizeCursorReplaceArgs(args) : args);
 	}
 
 	/**
@@ -1107,11 +1133,8 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 	 */
 	async mcpApprovalPreflight(call: CursorMcpCall) {
 		const toolName = call.toolName || call.name;
-		const args = Object.keys(call.args ?? {}).length > 0 ? call.args : decodeMcpArgs(call.rawArgs ?? {});
-		const preferReplace = cursorMcpPrefersReplaceEdit(toolName, args);
-		const tool = preferReplace
-			? this.options.getEditReplaceTool?.()
-			: (this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName));
+		const args = mcpCallArgs(call);
+		const { tool, preferReplace } = resolveMcpTool(this.options, toolName, args);
 		if (!tool) return false;
 		const context = this.options.getToolContext?.();
 		const { approvalMode, userPolicies } = resolveApprovalFromContext(context);

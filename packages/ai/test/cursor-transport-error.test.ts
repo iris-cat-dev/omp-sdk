@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 
 describe("Cursor transport errors", () => {
-	it("surfaces a TLS handshake reset as a stream error", async () => {
+	it("surfaces a TLS handshake reset as a stream error when HTTP/2 is forced", async () => {
 		const child = Bun.spawn([process.execPath, path.join(import.meta.dir, "fixtures/cursor-tls-reset.ts")], {
 			cwd: path.resolve(import.meta.dir, "../../.."),
 			stdout: "pipe",

@@ -425,9 +425,10 @@ describe("fetchCursorUsableModels", () => {
 				description: "Anthropic's earlier flagship model, great for difficult tasks.",
 				thinking: {
 					mode: "effort",
-					efforts: ["high"],
+					efforts: ["medium", "high"],
 					effortRouting: {
 						off: "claude-4.6-opus-low",
+						medium: "claude-4.6-opus-medium",
 						high: "claude-4.6-opus-high",
 					},
 				},
@@ -449,6 +450,14 @@ describe("fetchCursorUsableModels", () => {
 				parameters: [
 					{ id: "thinking_effort", value: "high" },
 					{ id: "thinking", value: "true" },
+					{ id: "context", value: "300k" },
+				],
+				maxMode: false,
+			},
+			"claude-4.6-opus-medium": {
+				modelId: "claude-4.6-opus",
+				parameters: [
+					{ id: "thinking_effort", value: "medium" },
 					{ id: "context", value: "300k" },
 				],
 				maxMode: false,
@@ -477,7 +486,9 @@ describe("fetchCursorUsableModels", () => {
 				}),
 			}),
 		);
-		expect(models?.some(model => model.id === "claude-4.6-opus-medium")).toBe(false);
+		// The rich-only medium fixture stays routable; only admin-blocked xhigh is excluded.
+		expect(lane?.thinking?.effortRouting?.medium).toBe("claude-4.6-opus-medium");
+		expect(lane?.cursorModelRoutes).not.toHaveProperty("claude-4.6-opus-xhigh");
 		expect(models?.some(model => model.id === "claude-4.6-opus-xhigh")).toBe(false);
 		expect(models?.some(model => model.id === "fable-retention")).toBe(false);
 
@@ -488,6 +499,169 @@ describe("fetchCursorUsableModels", () => {
 		expect(rebuiltLane?.supportsTools).toBe(true);
 		expect(rebuiltLane?.cursorModelRoutes).toEqual(lane?.cursorModelRoutes);
 		expect(rebuiltLane?.thinking?.effortRouting).toEqual(lane?.thinking?.effortRouting);
+	});
+
+	it.each([false, true])("lists rich GLM 5.3 and Grok 4.7 variants (empty legacy roster: %p)", async emptyLegacy => {
+		const usable = create(GetUsableModelsResponseSchema, {
+			models: emptyLegacy ? [] : [create(ModelDetailsSchema, { modelId: "composer-2.5" })],
+		});
+		const grokEfforts = ["low", "medium", "high", "xhigh"];
+		const available = create(AvailableModelsResponseSchema, {
+			models: [
+				create(AvailableModelsResponse_ModelDetailsSchema, {
+					name: "glm-5p3-flash",
+					clientDisplayName: "GLM 5.3 Flash",
+					supportsAgent: true,
+					supportsImages: true,
+					contextTokenLimit: 1_000_000,
+					legacySlugs: ["glm-5p3-flash", "glm-5p3-flash-low", "glm-5p3-flash-high", "glm-5p3-flash-max"],
+					variants: [
+						richVariant("glm-5p3-flash-low", { reasoning: "low" }),
+						richVariant("glm-5p3-flash-high", { reasoning: "high" }, { isDefaultNonMaxConfig: true }),
+						richVariant("glm-5p3-flash-max", { reasoning: "max" }),
+					],
+				}),
+				create(AvailableModelsResponse_ModelDetailsSchema, {
+					name: "grok-4.7",
+					clientDisplayName: "Grok 4.7",
+					supportsAgent: true,
+					parameterDefinitions: [booleanParameter("fast", "2x more expensive")],
+					variants: grokEfforts.flatMap(effort => [
+						richVariant(
+							`grok-4.7-${effort}`,
+							{ reasoning: effort, fast: "false" },
+							{ isDefaultNonMaxConfig: effort === "medium" },
+						),
+						richVariant(`grok-4.7-${effort}-fast`, { reasoning: effort, fast: "true" }),
+					]),
+				}),
+			],
+		});
+		const rpcBaseUrl = await startCursorDiscoveryRpcServer({
+			"/agent.v1.AgentService/GetUsableModels": toBinary(GetUsableModelsResponseSchema, usable),
+			"/aiserver.v1.AiService/AvailableModels": toBinary(AvailableModelsResponseSchema, available),
+		});
+		const models = await fetchCursorUsableModels({ apiKey: "account-token", baseUrl: rpcBaseUrl, timeoutMs: 1_000 });
+
+		expect(models?.map(model => model.id)).toEqual([
+			...(emptyLegacy ? [] : ["composer-2.5"]),
+			"glm-5p3-flash",
+			"grok-4.7",
+			"grok-4.7-fast",
+		]);
+		const glm = models?.find(model => model.id === "glm-5p3-flash");
+		expect(glm?.requestModelId).toBe("glm-5p3-flash-high");
+		expect(glm?.cursorModelRoutes).toEqual({
+			"glm-5p3-flash-low": {
+				modelId: "glm-5p3-flash",
+				parameters: [{ id: "reasoning", value: "low" }],
+			},
+			"glm-5p3-flash-high": {
+				modelId: "glm-5p3-flash",
+				parameters: [{ id: "reasoning", value: "high" }],
+			},
+			"glm-5p3-flash-max": {
+				modelId: "glm-5p3-flash",
+				parameters: [{ id: "reasoning", value: "max" }],
+			},
+		});
+		expect(glm?.thinking?.effortRouting).toEqual({
+			low: "glm-5p3-flash-low",
+			high: "glm-5p3-flash-high",
+			max: "glm-5p3-flash-max",
+		});
+		for (const fast of [false, true]) {
+			const id = `grok-4.7${fast ? "-fast" : ""}`;
+			const grok = models?.find(model => model.id === id);
+			expect(grok?.cursorModelParameters).toContainEqual({ id: "fast", value: String(fast) });
+			expect(grok?.thinking?.effortRouting).toEqual(
+				Object.fromEntries(grokEfforts.map(effort => [effort, `grok-4.7-${effort}${fast ? "-fast" : ""}`])),
+			);
+			for (const effort of grokEfforts) {
+				expect(grok?.cursorModelRoutes?.[`grok-4.7-${effort}${fast ? "-fast" : ""}`]).toEqual({
+					modelId: "grok-4.7",
+					parameters: [
+						{ id: "reasoning", value: effort },
+						{ id: "fast", value: String(fast) },
+					],
+				});
+			}
+		}
+		for (const lane of models ?? []) {
+			const built = buildModel(lane);
+			expect(built.cursorModelRoutes).toEqual(lane.cursorModelRoutes);
+			expect(built.thinking?.effortRouting).toEqual(lane.thinking?.effortRouting);
+		}
+	});
+
+	it("excludes hidden, Cmd-K-only, retention-required and non-agent models even when legacy lists them", async () => {
+		const excluded = [
+			{ name: "hidden-preview", isHidden: true },
+			{ name: "cmdk-fast", onlySupportsCmdK: true },
+			{ name: "retention-preview", requiresDataRetention: true },
+			{ name: "chat-only", isChatOnly: true },
+			{ name: "no-agent", supportsAgent: false },
+		];
+		const usable = create(GetUsableModelsResponseSchema, {
+			models: ["composer-2.5", ...excluded.flatMap(({ name }) => [name, `${name}-high`, `${name}-alias`])].map(
+				modelId => create(ModelDetailsSchema, { modelId }),
+			),
+		});
+		const available = create(AvailableModelsResponseSchema, {
+			models: [
+				create(AvailableModelsResponse_ModelDetailsSchema, { name: "glm-5p3", supportsAgent: true }),
+				...excluded.map(details =>
+					create(AvailableModelsResponse_ModelDetailsSchema, {
+						supportsAgent: true,
+						...details,
+						legacySlugs: [`${details.name}-high`],
+						idAliases: [`${details.name}-alias`],
+						variants: [richVariant(`${details.name}-high`, { reasoning: "high" })],
+					}),
+				),
+			],
+		});
+		const rpcBaseUrl = await startCursorDiscoveryRpcServer({
+			"/agent.v1.AgentService/GetUsableModels": toBinary(GetUsableModelsResponseSchema, usable),
+			"/aiserver.v1.AiService/AvailableModels": toBinary(AvailableModelsResponseSchema, available),
+		});
+		const models = await fetchCursorUsableModels({ apiKey: "account-token", baseUrl: rpcBaseUrl, timeoutMs: 1_000 });
+		expect(models?.map(model => model.id)).toEqual(["composer-2.5", "glm-5p3"]);
+		expect(models?.find(model => model.id === "glm-5p3")?.cursorModelRoutes).toEqual({
+			"glm-5p3": { modelId: "glm-5p3", parameters: [] },
+		});
+	});
+
+	it("refetches legacy-gated v5 cache rows in the v6 authoritative namespace", async () => {
+		const usable = create(GetUsableModelsResponseSchema, {
+			models: [create(ModelDetailsSchema, { modelId: "composer-2.5" })],
+		});
+		const available = create(AvailableModelsResponseSchema, {
+			models: [create(AvailableModelsResponse_ModelDetailsSchema, { name: "glm-5p3", supportsAgent: true })],
+		});
+		const rpcBaseUrl = await startCursorDiscoveryRpcServer({
+			"/agent.v1.AgentService/GetUsableModels": toBinary(GetUsableModelsResponseSchema, usable),
+			"/aiserver.v1.AiService/AvailableModels": toBinary(AvailableModelsResponseSchema, available),
+		});
+		const cacheDbPath = await createTempCachePath();
+		const options = cursorModelManagerOptions({ apiKey: "account-token", baseUrl: rpcBaseUrl });
+		expect(options.cacheProviderId).toMatch(/^cursor:rich-models-v6:/);
+		await resolveProviderModels(
+			{
+				providerId: "cursor",
+				cacheProviderId: options.cacheProviderId?.replace("rich-models-v6:", "rich-models-v5:"),
+				cacheDbPath,
+				staticModels: [],
+				fetchDynamicModels: async () => [cursorModelSpec("composer-2.5")],
+				now: () => 1,
+			},
+			"online",
+		);
+		const result = await resolveProviderModels(
+			{ ...options, cacheDbPath, staticModels: [], now: () => 2 },
+			"online-if-uncached",
+		);
+		expect(result.models.map(model => model.id)).toEqual(["composer-2.5", "glm-5p3"]);
 	});
 
 	it("prices rich lanes from the KDL rate card and leaves uncovered lanes unpriced", async () => {
@@ -556,6 +730,14 @@ describe("fetchCursorUsableModels", () => {
 					parameterDefinitions: [fastDefinition],
 					variants: [fastVariant("gemini-4-argon", false), fastVariant("gemini-4-argon-fast", true)],
 				}),
+				create(AvailableModelsResponse_ModelDetailsSchema, {
+					name: "gemini-4-carbon",
+					clientDisplayName: "Gemini 4 Carbon",
+					supportsAgent: true,
+					legacySlugs: ["gemini-4-carbon", "gemini-4-carbon-fast"],
+					parameterDefinitions: [fastDefinition],
+					variants: [fastVariant("gemini-4-carbon", false), fastVariant("gemini-4-carbon-fast", true)],
+				}),
 			],
 		});
 		const pricingBaseUrl = await startCursorDiscoveryRpcServer({
@@ -596,14 +778,16 @@ describe("fetchCursorUsableModels", () => {
 		// A lane priced from a sibling slug's card (no rule names its own id)
 		// keeps that card's dated schedule, scaled by the declared multiplier,
 		// so it changes price on the date even on a row built before it.
-		const argonSwitch = Date.parse("2026-12-01T08:00:00Z");
+		const priceSwitch = Date.parse("2026-12-01T08:00:00Z");
 		for (const [id, multiplier] of [
 			["gemini-4-argon", 1],
 			["gemini-4-argon-fast", 2],
+			["gemini-4-carbon", 1],
+			["gemini-4-carbon-fast", 2],
 		] as const) {
-			const argon = built(id);
-			expect(calculateUncachedInputCost(argon.cost, 1_000_000, argonSwitch - 1)).toBeCloseTo(2 * multiplier, 10);
-			expect(calculateUncachedInputCost(argon.cost, 1_000_000, argonSwitch)).toBeCloseTo(4 * multiplier, 10);
+			const model = built(id);
+			expect(calculateUncachedInputCost(model.cost, 1_000_000, priceSwitch - 1)).toBeCloseTo(2 * multiplier, 10);
+			expect(calculateUncachedInputCost(model.cost, 1_000_000, priceSwitch)).toBeCloseTo(4 * multiplier, 10);
 		}
 	});
 	it("decodes Cursor's length-delimited vendor metadata", () => {
@@ -980,7 +1164,7 @@ const richVariant = (
 		),
 	});
 
-/** Discovers only `AvailableModels` (no usable filter). */
+/** Discovers `AvailableModels` while the legacy roster RPC is unavailable. */
 async function discoverAvailable(
 	models: AvailableModelsResponse_ModelDetails[],
 ): Promise<Map<string, ModelSpec<"cursor-agent">>> {

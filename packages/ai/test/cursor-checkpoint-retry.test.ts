@@ -11,6 +11,7 @@ import {
 	ConversationTokenDetailsSchema,
 	ExecServerMessageSchema,
 	InteractionUpdateSchema,
+	McpArgsSchema,
 	ReadArgsSchema,
 	TextDeltaUpdateSchema,
 	TurnEndedUpdateSchema,
@@ -298,4 +299,100 @@ it("does not resume from a checkpoint while the exec handler is still running at
 	expect(handlerRuns).toBe(1);
 	expect(requestCount).toBe(1);
 	expect(result.stopReason).toBe("error");
+});
+
+it("does not execute queued frames after abort when the active mutation later finishes", async () => {
+	const sessions = new Set<http2.Http2Session>();
+	const mutationStarted = Promise.withResolvers<void>();
+	const mutationGate = Promise.withResolvers<void>();
+	const mutationFinished = Promise.withResolvers<void>();
+	let readRuns = 0;
+	const server = http2.createServer();
+	server.on("session", session => {
+		sessions.add(session);
+		session.on("close", () => sessions.delete(session));
+	});
+	server.on("stream", (providerStream: http2.ServerHttp2Stream) => {
+		let responded = false;
+		providerStream.on("data", (chunk: Buffer) => {
+			if (responded || !decodeRunRequest(chunk)) return;
+			responded = true;
+			providerStream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+			const mutation = create(AgentServerMessageSchema, {
+				message: {
+					case: "execServerMessage",
+					value: create(ExecServerMessageSchema, {
+						id: 2,
+						execId: "exec-mutation",
+						message: {
+							case: "mcpArgs",
+							value: create(McpArgsSchema, {
+								name: "write",
+								toolName: "write",
+								toolCallId: "call-mutation",
+								providerIdentifier: "pi-agent",
+							}),
+						},
+					}),
+				},
+			});
+			providerStream.write(
+				Buffer.concat([frameConnectMessage(toBinary(AgentServerMessageSchema, mutation)), execReadFrame()]),
+			);
+		});
+	});
+	const listening = Promise.withResolvers<void>();
+	server.once("error", listening.reject);
+	server.listen(0, "127.0.0.1", listening.resolve);
+	await listening.promise;
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("expected an HTTP/2 fixture port");
+	const abort = new AbortController();
+	try {
+		const response = streamCursor(makeModel(`http://127.0.0.1:${address.port}`), context, {
+			apiKey: "test-token",
+			signal: abort.signal,
+			execHandlers: {
+				mcpConcurrency: () => "exclusive",
+				async mcp(call) {
+					mutationStarted.resolve();
+					await mutationGate.promise;
+					mutationFinished.resolve();
+					return {
+						role: "toolResult",
+						toolCallId: call.toolCallId,
+						toolName: "write",
+						content: [{ type: "text", text: "written" }],
+						isError: false,
+						timestamp: 1,
+					};
+				},
+				async read(args) {
+					readRuns++;
+					return {
+						role: "toolResult",
+						toolCallId: args.toolCallId,
+						toolName: "read",
+						content: [{ type: "text", text: "read" }],
+						isError: false,
+						timestamp: 1,
+					};
+				},
+			},
+		});
+		await mutationStarted.promise;
+		abort.abort();
+		expect((await response.result()).stopReason).toBe("aborted");
+		mutationGate.resolve();
+		await mutationFinished.promise;
+		const turn = Promise.withResolvers<void>();
+		setImmediate(turn.resolve);
+		await turn.promise;
+		expect(readRuns).toBe(0);
+	} finally {
+		abort.abort();
+		mutationGate.resolve();
+		for (const session of sessions) session.destroy();
+		server.close();
+	}
 });

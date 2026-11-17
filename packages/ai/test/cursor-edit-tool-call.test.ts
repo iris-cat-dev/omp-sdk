@@ -9,6 +9,7 @@ import {
 	processInteractionUpdate,
 	type ToolCallState,
 } from "@oh-my-pi/pi-ai/providers/cursor";
+import { CursorExecOrder } from "@oh-my-pi/pi-ai/providers/cursor/exec-order";
 import type {
 	AssistantMessage,
 	CursorExecHandlers,
@@ -25,6 +26,7 @@ import {
 	EditToolCallSchema,
 	ExecServerMessageSchema,
 	ReadArgsSchema,
+	ShellArgsSchema,
 	ToolCallSchema,
 	WriteArgsSchema,
 } from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
@@ -563,5 +565,251 @@ describe("cursor native editToolCall (StrReplace)", () => {
 		);
 
 		expect(readPaths).toEqual([`${TARGET}:raw:2+1`]);
+	});
+});
+
+describe("cursor exec frames keep tool-batch order", () => {
+	function execShell(toolCallId: string) {
+		return create(AgentServerMessageSchema, {
+			message: {
+				case: "execServerMessage",
+				value: create(ExecServerMessageSchema, {
+					id: 2,
+					execId: `exec-${toolCallId}`,
+					message: { case: "shellArgs", value: create(ShellArgsSchema, { toolCallId, command: "cat note.txt" }) },
+				}),
+			},
+		});
+	}
+
+	function toolResult(toolCallId: string, toolName: string): ToolResultMessage {
+		return {
+			role: "toolResult",
+			toolCallId,
+			toolName,
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			timestamp: 1,
+		};
+	}
+
+	function setup(execHandlers: CursorExecHandlers) {
+		const output = cursorAssistantMessage();
+		const stream = new AssistantMessageEventStream();
+		const state = newBlockState(result => result);
+		state.execOrder = new CursorExecOrder();
+		const { h2Request } = mockH2();
+		const dispatch = (msg: Parameters<typeof handleServerMessage>[0]) =>
+			handleServerMessage(
+				msg,
+				output,
+				stream,
+				state,
+				new Map(),
+				h2Request,
+				execHandlers,
+				result => result,
+				{
+					sawTokenDelta: false,
+				},
+				[],
+			);
+		return { output, stream, state, dispatch };
+	}
+
+	it("holds a later Shell until a native edit's write finishes", async () => {
+		const calls: string[] = [];
+		const writeStarted = Promise.withResolvers<void>();
+		const writeGate = Promise.withResolvers<void>();
+		const { output, stream, state, dispatch } = setup({
+			async read(args) {
+				calls.push("read");
+				return toolResult(args.toolCallId, "read");
+			},
+			async write(args) {
+				calls.push("write");
+				writeStarted.resolve();
+				await writeGate.promise;
+				calls.push("written");
+				return toolResult(args.toolCallId, "write");
+			},
+			async shell(args) {
+				calls.push("shell");
+				return toolResult(args.toolCallId, "bash");
+			},
+		});
+		startEdit(output, stream, state);
+		await dispatch(execRead({ path: TARGET, toolCallId: EDIT_ID }));
+		const shell = dispatch(execShell("call-shell"));
+		const write = dispatch(execWrite({ path: TARGET, toolCallId: EDIT_ID, fileText: "orange\n" }));
+		await writeStarted.promise;
+		expect(calls).toEqual(["read", "write"]);
+		writeGate.resolve();
+		await Promise.all([write, shell]);
+		expect(calls).toEqual(["read", "write", "written", "shell"]);
+	});
+
+	it("waits for an earlier Shell before reading a native edit's file", async () => {
+		const calls: string[] = [];
+		const shellStarted = Promise.withResolvers<void>();
+		const shellGate = Promise.withResolvers<void>();
+		const { output, stream, state, dispatch } = setup({
+			async read(args) {
+				calls.push("read");
+				return toolResult(args.toolCallId, "read");
+			},
+			async shell(args) {
+				calls.push("shell");
+				shellStarted.resolve();
+				await shellGate.promise;
+				calls.push("shell done");
+				return toolResult(args.toolCallId, "bash");
+			},
+		});
+		const shell = dispatch(execShell("call-shell"));
+		await shellStarted.promise;
+		startEdit(output, stream, state);
+		const read = dispatch(execRead({ path: TARGET, toolCallId: EDIT_ID }));
+		await Promise.resolve();
+		expect(calls).toEqual(["shell"]);
+		shellGate.resolve();
+		await Promise.all([shell, read]);
+		expect(calls).toEqual(["shell", "shell done", "read"]);
+	});
+
+	it("drops queued calls when a run closes, including later arrivals", async () => {
+		const calls: string[] = [];
+		const { output, stream, state, dispatch } = setup({
+			async read(args) {
+				calls.push("read");
+				return toolResult(args.toolCallId, "read");
+			},
+			async shell(args) {
+				calls.push("shell");
+				return toolResult(args.toolCallId, "bash");
+			},
+		});
+		startEdit(output, stream, state);
+		await dispatch(execRead({ path: TARGET, toolCallId: EDIT_ID }));
+		const shell = dispatch(execShell("call-shell"));
+		state.execOrder?.close();
+		await Promise.all([shell, dispatch(execShell("late-shell"))]);
+		expect(calls).toEqual(["read"]);
+		expect(output.content.filter(block => block.type === "toolCall").map(block => block.name)).toEqual(["edit"]);
+	});
+
+	it("releases later calls when the server completes an edit without writing", async () => {
+		const calls: string[] = [];
+		const { output, stream, state, dispatch } = setup({
+			async read(args) {
+				calls.push("read");
+				return toolResult(args.toolCallId, "read");
+			},
+			async shell(args) {
+				calls.push("shell");
+				return toolResult(args.toolCallId, "bash");
+			},
+		});
+		startEdit(output, stream, state);
+		await dispatch(execRead({ path: TARGET, toolCallId: EDIT_ID }));
+		const shell = dispatch(execShell("call-shell"));
+		await Promise.resolve();
+		expect(calls).toEqual(["read"]);
+		processInteractionUpdate(
+			{
+				message: {
+					case: "toolCallCompleted",
+					value: {
+						callId: ENVELOPE_ID,
+						toolCall: create(ToolCallSchema, {
+							toolCallId: EDIT_ID,
+							tool: {
+								case: "editToolCall",
+								value: create(EditToolCallSchema, {
+									args: { path: TARGET, streamContent: "orange" },
+									result: create(EditResultSchema, {
+										result: {
+											case: "error",
+											value: create(EditErrorSchema, {
+												path: TARGET,
+												error: "old_string not found",
+											}),
+										},
+									}),
+								}),
+							},
+						}),
+					},
+				},
+			},
+			output,
+			stream,
+			state,
+			{ sawTokenDelta: false },
+		);
+		await shell;
+		expect(calls).toEqual(["read", "shell"]);
+	});
+
+	it("does not let a second frame of a queued call bypass its earlier blockers", async () => {
+		const order = new CursorExecOrder();
+		await order.enter("earlier", false);
+		const read = order.enter("edit", true);
+		const write = order.enter("edit", true);
+		order.close();
+		expect(await read).toBe(false);
+		expect(await write).toBe(false);
+	});
+
+	it("orders a native Write between the reads before and after it", async () => {
+		const calls: string[] = [];
+		const readStarted = Promise.withResolvers<void>();
+		const readGate = Promise.withResolvers<void>();
+		const writeStarted = Promise.withResolvers<void>();
+		const writeGate = Promise.withResolvers<void>();
+		let body = "apple";
+		const { dispatch } = setup({
+			async read(args) {
+				if (args.toolCallId === "before-write") {
+					calls.push("read before");
+					readStarted.resolve();
+					await readGate.promise;
+				} else calls.push(`read after: ${body}`);
+				return toolResult(args.toolCallId, "read");
+			},
+			async write(args) {
+				calls.push("write");
+				writeStarted.resolve();
+				await writeGate.promise;
+				body = args.fileText;
+				return toolResult(args.toolCallId, "write");
+			},
+		});
+		const before = dispatch(execRead({ path: TARGET, toolCallId: "before-write" }));
+		await readStarted.promise;
+		const write = dispatch(execWrite({ path: TARGET, toolCallId: "native-write", fileText: "orange" }));
+		const after = dispatch(execRead({ path: TARGET, toolCallId: "after-write" }));
+		await Promise.resolve();
+		expect(calls).toEqual(["read before"]);
+		readGate.resolve();
+		await writeStarted.promise;
+		expect(calls).toEqual(["read before", "write"]);
+		writeGate.resolve();
+		await Promise.all([before, write, after]);
+		expect(calls).toEqual(["read before", "write", "read after: orange"]);
+	});
+
+	it("does not start a ready frame when the run closes before its continuation resumes", async () => {
+		let writes = 0;
+		const { dispatch, state } = setup({
+			async write(args) {
+				writes++;
+				return toolResult(args.toolCallId, "write");
+			},
+		});
+		const write = dispatch(execWrite({ path: TARGET, toolCallId: "native-write", fileText: "orange" }));
+		state.execOrder?.close();
+		await write;
+		expect(writes).toBe(0);
 	});
 });

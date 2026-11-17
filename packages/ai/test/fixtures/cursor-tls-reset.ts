@@ -29,7 +29,7 @@ const context: Context = {
 };
 
 try {
-	const stream = streamCursor(model, context, { apiKey: "test-token" });
+	const stream = streamCursor(model, context, { apiKey: "test-token", transport: "http2" });
 	const eventTypes: string[] = [];
 	for await (const event of stream) eventTypes.push(event.type);
 	const result = await stream.result();

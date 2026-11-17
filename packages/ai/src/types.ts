@@ -1561,6 +1561,12 @@ export interface CursorExecHandlers {
 	 */
 	mcpApprovalPreflight?: (call: CursorMcpCall) => Promise<boolean>;
 	/**
+	 * Order a locally executed MCP call by the actual resolved tool, including aliases.
+	 * Exclusive calls wait for earlier exec frames and hold later ones until done.
+	 * Unset means shared; approval probes execute nothing and are never classified.
+	 */
+	mcpConcurrency?: (call: CursorMcpCall) => "shared" | "exclusive";
+	/**
 	 * Modern Cursor CLI Pi tool frames (`ExecServerMessage` 45-51). They are a
 	 * distinct frame family from the legacy `readArgs`/`shellArgs`/... set, not
 	 * an alias: different args, different result oneofs, and no `tool_call_id`.

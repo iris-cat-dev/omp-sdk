@@ -266,6 +266,7 @@ import {
 	piTimeout,
 	shellDeadlineSeconds,
 } from "./cursor/exec-modern";
+import { CursorExecOrder } from "./cursor/exec-order";
 import { handleInteractionQuery, protoUnknownFields } from "./cursor/interaction-query";
 
 export const CURSOR_API_URL = CURSOR_DEFAULT_BASE_URL;
@@ -449,7 +450,7 @@ export interface CursorOptions extends StreamOptions {
 	externalToolExecutor?: boolean;
 	/** Wire model id selected after thinking-effort routing (`resolveWireModelId`). */
 	wireModelId?: string;
-	/** Run transport. `auto` starts with HTTP/2 and falls back on failed ALPN negotiation. */
+	/** Run transport. `auto` falls back after failed ALPN or a TLS-handshake reset, caching successful fallback for ten minutes. */
 	transport?: "auto" | "http2" | "http1";
 }
 
@@ -463,8 +464,9 @@ interface CursorRetryContext {
 	checkpointHash?: string;
 	noProgressResumes: number;
 	output: AssistantMessage;
-	blockState: BlockState;
-	usageState: UsageState;
+	/** Unset when the earlier attempt failed before its run started. */
+	blockState?: BlockState;
+	usageState?: UsageState;
 	baseConversationId: string;
 	conversationId: string;
 	blobStore: Map<string, Uint8Array>;
@@ -1019,14 +1021,22 @@ function createHttp1RunTransport(options: CursorHttp1RunTransportOptions): Curso
 	};
 }
 
-function isHttp2Unavailable(error: unknown): boolean {
-	const code = (error as { code?: unknown } | null)?.code;
+function isHttp2AlpnRejected(error: unknown): boolean {
+	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
 	const message = error instanceof Error ? error.message : String(error);
 	return (
 		(code === "ERR_HTTP2_ERROR" && /h2 is not supported/i.test(message)) ||
 		/Cursor run transport could not negotiate HTTP\/2/i.test(message)
 	);
 }
+
+function isCursorTlsReset(error: unknown): boolean {
+	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+	const message = error instanceof Error ? error.message : String(error);
+	return code === "ECONNRESET" && /disconnected before secure TLS connection was established/i.test(message);
+}
+
+const http2Unavailable = new LRUCache<string, true>({ max: 32, ttl: 10 * 60_000 });
 
 /**
  * Maps an opaque HTTP/2 negotiation failure into an actionable error.
@@ -1192,7 +1202,12 @@ function streamCursorWithWireMode(
 
 	(async () => {
 		const retryContext = timing?.retry;
-		const transportMode = timing?.transport ?? (options?.transport === "http1" ? "http1" : "http2");
+		const transportMode =
+			timing?.transport ??
+			(options?.transport === "http1" ||
+			(options?.transport !== "http2" && http2Unavailable.get(model.baseUrl || CURSOR_API_URL))
+				? "http1"
+				: "http2");
 		let startTime = timing?.startTime ?? performance.now();
 		let firstTokenTime = retryContext?.firstTokenTime;
 
@@ -1485,6 +1500,8 @@ function streamCursorWithWireMode(
 					})
 				: undefined;
 
+			// A failed connect can fall back before run state exists; that attempt must not emit another start.
+			if (!retryContext) stream.push({ type: "start", partial: output });
 			if (transportMode === "http2") {
 				const proxyUrl = getProxyForUrl(model.provider, new URL(baseUrl));
 				let client: http2.ClientHttp2Session;
@@ -1512,8 +1529,6 @@ function streamCursorWithWireMode(
 					signal: options?.signal,
 				});
 			}
-
-			if (!retryContext) stream.push({ type: "start", partial: output });
 
 			const frameDecoder = new ConnectFrameDecoder();
 			const previousState = retryContext?.blockState;
@@ -1555,6 +1570,7 @@ function streamCursorWithWireMode(
 				},
 				onTodoSnapshot: options?.execHandlers?.todoSync?.bind(options.execHandlers),
 				onToolResult,
+				execOrder: new CursorExecOrder(),
 				holdExternalCall: relay
 					? (execMsg, mcpCall) => {
 							relay.held.set(mcpCall.toolCallId, { execMsg, mcpCall });
@@ -1770,6 +1786,7 @@ function streamCursorWithWireMode(
 			});
 
 			const abortTransport = () => {
+				state.execOrder?.close();
 				runTransport?.close();
 				void closeDebugLog().finally(() => {
 					settleH2(new AIError.AbortError());
@@ -1909,6 +1926,7 @@ function streamCursorWithWireMode(
 				clearTimeout(relay.quietTimer);
 			}
 			await h2Completion.promise;
+			state.execOrder?.close();
 			if (conversationId && baseConversationId && conversationId !== baseConversationId) {
 				successfulRotatedConversationIds.add(conversationId);
 				freshRotatedConversationIds.delete(conversationId);
@@ -1992,14 +2010,12 @@ function streamCursorWithWireMode(
 		} catch (caughtError) {
 			if (relay) clearTimeout(relay.quietTimer);
 			let error = caughtError;
-			const h2Unavailable = transportMode === "http2" && isHttp2Unavailable(error);
+			const h2Unavailable = transportMode === "http2" && (isHttp2AlpnRejected(error) || isCursorTlsReset(error));
 			if (
 				h2Unavailable &&
 				options?.transport !== "http2" &&
 				!sawProgressOrSideEffect &&
 				!options?.signal?.aborted &&
-				openBlockState !== undefined &&
-				usageState !== undefined &&
 				baseConversationId !== undefined &&
 				conversationId !== undefined &&
 				activeBlobStore !== undefined &&
@@ -2023,8 +2039,8 @@ function streamCursorWithWireMode(
 						checkpointHash: retryContext?.checkpointHash,
 						noProgressResumes: retryContext?.noProgressResumes ?? 0,
 						output,
-						blockState: openBlockState,
-						usageState,
+						blockState: openBlockState ?? retryContext?.blockState,
+						usageState: usageState ?? retryContext?.usageState,
 						baseConversationId,
 						conversationId,
 						blobStore: activeBlobStore,
@@ -2036,6 +2052,7 @@ function streamCursorWithWireMode(
 				try {
 					for await (const event of http1Stream) {
 						if (event.type === "start") continue;
+						if (event.type === "done") http2Unavailable.set(model.baseUrl || CURSOR_API_URL, true);
 						stream.push(event);
 					}
 					const http1Result = await http1Stream.result();
@@ -2089,6 +2106,7 @@ function streamCursorWithWireMode(
 			// Resume only from a checkpoint that followed every decoded side effect
 			// and every client result write; without one, replay is safe solely
 			// before the provider emitted work.
+			openBlockState?.execOrder?.close();
 			await drainInFlightDispatches();
 			const retryAttempt = retryContext?.attempt ?? 0;
 			const hasFreshCheckpoint =
@@ -2252,6 +2270,7 @@ function streamCursorWithWireMode(
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {
+			openBlockState?.execOrder?.close();
 			const log = await debugResponseLogPromise;
 			await log?.close();
 			if (heartbeatTimer) {
@@ -2322,8 +2341,10 @@ function resumeParkedCursorRun(
 }
 
 /** Streams a Cursor Agent turn, retrying a discovered effort id when its normalized wire id is unavailable. */
-export const streamCursor: StreamFunction<"cursor-agent"> = (model, context, options) =>
-	resumeParkedCursorRun(model, context, options) ?? streamCursorWithWireMode(model, context, options, "normalized");
+export const streamCursor: StreamFunction<"cursor-agent"> = (model, context, options) => {
+	const turn = withPromptLast(context);
+	return resumeParkedCursorRun(model, turn, options) ?? streamCursorWithWireMode(model, turn, options, "normalized");
+};
 
 export type ToolCallState = ToolCall & {
 	[kStreamingBlockIndex]: number;
@@ -2391,6 +2412,8 @@ export interface BlockState {
 	editOwnedToolCallIds?: Set<string>;
 	/** Edit blocks whose write already persisted a `toolResult`. */
 	pairedEditToolCallIds?: Set<string>;
+	/** Orders this run's exec frames like a local tool batch. */
+	execOrder?: CursorExecOrder;
 	firstTokenTime: number | undefined;
 	setTextBlock: (b: (TextContent & { [kStreamingBlockIndex]: number }) | null) => void;
 	setThinkingBlock: (b: (ThinkingContent & { [kStreamingBlockIndex]: number }) | null) => void;
@@ -2862,6 +2885,37 @@ function sendShellStreamExitFromResult(
 	}
 }
 
+/** File mutations wait for earlier calls and hold later calls until they finish. */
+const EXCLUSIVE_EXEC_CASES: Partial<Record<NonNullable<ExecServerMessage["message"]["case"]>, true>> = {
+	writeArgs: true,
+	deleteArgs: true,
+	piEditArgs: true,
+	piWriteArgs: true,
+};
+
+function classifyMcpExecFrame(
+	execMsg: ExecServerMessage,
+	execHandlers: CursorExecHandlers | undefined,
+): { exclusive: boolean; call?: CursorMcpCall } {
+	if (execMsg.message.case !== "mcpArgs" || !execHandlers?.mcp || !execHandlers.mcpConcurrency) {
+		return { exclusive: false };
+	}
+	const call = decodeMcpCall(execMsg.message.value);
+	if (call.approvalOnly) return { exclusive: false, call };
+	try {
+		return { exclusive: execHandlers.mcpConcurrency(call) === "exclusive", call };
+	} catch {
+		return { exclusive: true, call };
+	}
+}
+
+function execFrameCallId(execMsg: ExecServerMessage): string {
+	const value = execMsg.message.value;
+	const toolCallId = value && "toolCallId" in value ? value.toolCallId : undefined;
+	return typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `exec:${execMsg.id}:${execMsg.execId}`;
+}
+
+/** Enter synchronously in frame arrival order, before awaiting any handler. */
 async function handleExecServerMessage(
 	execMsg: ExecServerMessage,
 	runTransport: CursorMessageWriter,
@@ -2873,6 +2927,50 @@ async function handleExecServerMessage(
 	stream: AssistantMessageEventStream,
 	state: BlockState,
 	externalToolExecutor: boolean,
+): Promise<void> {
+	const order = state.execOrder;
+	const execCase = execMsg.message.case;
+	const gated = order !== undefined && execCase !== undefined && execCase !== "requestContextArgs";
+	const mcp = gated ? classifyMcpExecFrame(execMsg, execHandlers) : { exclusive: false };
+	const run = () =>
+		runExecServerMessage(
+			execMsg,
+			runTransport,
+			execHandlers,
+			onToolResult,
+			requestContextTools,
+			requestContextRules,
+			output,
+			stream,
+			state,
+			externalToolExecutor,
+			mcp.call,
+		);
+	if (!gated) return run();
+	const callId = execFrameCallId(execMsg);
+	const editOwned =
+		(execCase === "readArgs" || execCase === "writeArgs") && isEditOwnedToolCallId(state, output, callId);
+	const reached = await order.enter(callId, editOwned || mcp.exclusive || EXCLUSIVE_EXEC_CASES[execCase] === true);
+	try {
+		if (reached && !order.closed) await run();
+	} finally {
+		// A native edit holds its place from its read until its write or server completion.
+		if (!reached || !(editOwned && execCase === "readArgs")) order.leave(callId);
+	}
+}
+
+async function runExecServerMessage(
+	execMsg: ExecServerMessage,
+	runTransport: CursorMessageWriter,
+	execHandlers: CursorExecHandlers | undefined,
+	onToolResult: CursorToolResultHandler | undefined,
+	requestContextTools: McpToolDefinition[],
+	requestContextRules: CursorRule[],
+	output: AssistantMessage,
+	stream: AssistantMessageEventStream,
+	state: BlockState,
+	externalToolExecutor: boolean,
+	predecodedMcpCall?: CursorMcpCall,
 ): Promise<void> {
 	const execCase = execMsg.message.case;
 	log("exec", "dispatch", { execCase, execId: execMsg.execId, hasHandlers: !!execHandlers });
@@ -3219,7 +3317,7 @@ async function handleExecServerMessage(
 		}
 		case "mcpArgs": {
 			const args = execMsg.message.value;
-			const mcpCall = decodeMcpCall(args);
+			const mcpCall = predecodedMcpCall ?? decodeMcpCall(args);
 			// An approval probe, not an invocation: the frame asks whether the
 			// call would be permitted. Running the tool to find out fires a side
 			// effect the user has not been asked about, and fires it again when
@@ -6017,6 +6115,7 @@ export function processInteractionUpdate(
 						stream_content: edit.args.streamContent ?? stringToolArg(settled.arguments, "stream_content"),
 					});
 				}
+				state.execOrder?.leave(settled.id);
 				if (!state.pairedEditToolCallIds?.has(settled.id)) {
 					const { text, isError } = describeEditResult(toolCall);
 					state.onToolResult?.({
@@ -6261,9 +6360,17 @@ function resolveCursorRecordReplays(
 	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
 	const replays = new Map<number, CursorRecordReplay>();
 	let userMessage: Message | undefined;
+	let promptInBlock = false;
 	for (let index = 0; index < historyEnd; index++) {
 		const msg = messages[index];
-		if (msg.role === "user" || msg.role === "developer") userMessage = msg;
+		if (msg.role === "user") {
+			userMessage = msg;
+			promptInBlock = true;
+		} else if (msg.role === "developer") {
+			if (!promptInBlock) userMessage = msg;
+		} else {
+			promptInBlock = false;
+		}
 		if (msg.role !== "assistant" || msg.providerPayload?.type !== "cursorHistory") continue;
 		if (msg.api !== "cursor-agent" || msg.provider !== provider || msg.model !== modelId) continue;
 		if (msg.providerPayload.wireRoute !== wireRoute) continue;
@@ -6566,6 +6673,15 @@ function findLastUserMessageIndex(messages: Message[]): number {
 		}
 	}
 	return -1;
+}
+
+/** Move hook-appended developer context before the user prompt that identifies this turn. */
+function withPromptLast(context: Context): Context {
+	const { messages } = context;
+	let index = messages.length - 1;
+	while (index >= 0 && messages[index].role === "developer") index--;
+	if (index === messages.length - 1 || messages[index]?.role !== "user") return context;
+	return { ...context, messages: [...messages.slice(0, index), ...messages.slice(index + 1), messages[index]] };
 }
 
 /**
@@ -7417,7 +7533,7 @@ export async function buildGrpcRequest(
 	options: CursorOptions | undefined,
 	state: CursorRequestState,
 ): Promise<CursorGrpcRequest> {
-	return buildGrpcRequestForWireMode(model, context, options, state, "normalized");
+	return buildGrpcRequestForWireMode(model, withPromptLast(context), options, state, "normalized");
 }
 
 function hasImages(content: (TextContent | ImageContent)[]): boolean {

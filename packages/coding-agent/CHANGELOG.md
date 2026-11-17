@@ -40,6 +40,7 @@
 
 ### Fixed
 
+- Fixed Cursor native edits and exclusive MCP calls racing adjacent shell and read calls, so checks after an edit observe the changed file ([#18434](https://github.com/can1357/oh-my-pi/pull/18434) by [@KadirBerkpolat1](https://github.com/KadirBerkpolat1), [#18502](https://github.com/can1357/oh-my-pi/pull/18502) by [@eggpeat](https://github.com/eggpeat)).
 - Fixed custom API model definitions and overrides dropping service-tier declarations, preventing eligible GPT models from using Ultrafast ([#3](https://github.com/iris-cat-dev/omp-sdk/pull/3) by [@Charlie-chulong](https://github.com/Charlie-chulong)).
 - Fixed Computer use becoming permanently unavailable in the same conversation after host Stop or `computer.close()`: workers now restart without retaining foreground grants, while physical-Escape stops survive until the user's next message and final conversation disposal remains terminal.
 - Fixed existing and new Codex sessions ignoring newly added accounts while the model catalog cache was still fresh ([#142](https://github.com/iris-cat-dev/omp/issues/142)).

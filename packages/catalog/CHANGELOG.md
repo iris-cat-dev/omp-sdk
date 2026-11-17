@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Fixed Cursor model listings omitting available GLM 5.3 and Grok 4.7 models, while excluding hidden and Cmd-K-only entries and refreshing older cached rosters ([#18248](https://github.com/can1357/oh-my-pi/pull/18248) by [@joseotaviorf](https://github.com/joseotaviorf), with [hidden-model filtering](https://github.com/can1357/oh-my-pi/commit/51adeafb7f247a04f52db8ac4f2c8895b9aae458)).
+- Added Cursor Gemini 4 Carbon pricing, including the scheduled December 1 rate change, instead of reporting zero cost ([#18734](https://github.com/can1357/oh-my-pi/pull/18734) by [@eggpeat](https://github.com/eggpeat)).
 - Fixed model discovery reusing account access cached before OAuth accounts were added or removed, while preserving offline catalog fallback ([#142](https://github.com/iris-cat-dev/omp/issues/142)).
 - Fixed Cursor's DeepSeek V4.1 Flash 1017 reporting zero cost; every effort level now bills at Cursor's API rate of $0.30/$1.20 per million tokens, with cache reads at $0.006 ([#17390](https://github.com/can1357/oh-my-pi/pull/17390) by [@eggpeat](https://github.com/eggpeat))
 
