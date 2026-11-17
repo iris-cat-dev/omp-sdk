@@ -12,9 +12,9 @@ const fixtures: Array<{ directory: string; files: SandboxFs }> = [];
 afterEach(async () => {
 	for (const fixture of fixtures.splice(0)) { fixture.files.close(); await fs.rm(fixture.directory, { recursive: true, force: true }); }
 });
-async function fixture() {
+async function fixture(rootName = "root") {
 	const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "omp-sandbox-test-")));
-	const root = path.join(directory, "root");
+	const root = path.join(directory, rootName);
 	await fs.mkdir(root);
 	const files = await openSandboxFs({ root });
 	fixtures.push({ directory, files });
@@ -22,17 +22,18 @@ async function fixture() {
 }
 
 describe("native handle-bound sandbox", () => {
-	test("inside read/write/list; exclusive writes; stat/mkdir/remove are host-only", async () => {
-		const { files } = await fixture();
-		files.mkdir("nested");
-		files.write("nested/note.txt", Buffer.from("hello"), { exclusive: true });
-		expect(files.read("nested/note.txt").toString()).toBe("hello");
+	test("inside Unicode read/write/list; exclusive writes; stat/mkdir/remove are host-only", async () => {
+		const { files } = await fixture("QQ 沙箱");
+		files.mkdir("nested/中文");
+		files.write("nested/中文/笔记.txt", Buffer.from("hello"), { exclusive: true });
+		expect(files.read("nested/中文/笔记.txt").toString()).toBe("hello");
 		expect(files.list(".").map(entry => [entry.name, entry.isDirectory])).toEqual([["nested", true]]);
-		expect(files.stat("nested/note.txt")).toMatchObject({ isDirectory: false, size: 5 });
-		expect(() => files.write("nested/note.txt", Buffer.from("overwrite"), { exclusive: true })).toThrow("denied");
-		expect(files.read("nested/note.txt").toString()).toBe("hello");
-		files.remove("nested/note.txt");
-		expect(files.list("nested")).toEqual([]);
+		expect(files.list("nested").map(entry => [entry.name, entry.isDirectory])).toEqual([["中文", true]]);
+		expect(files.stat("nested/中文/笔记.txt")).toMatchObject({ isDirectory: false, size: 5 });
+		expect(() => files.write("nested/中文/笔记.txt", Buffer.from("overwrite"), { exclusive: true })).toThrow("denied");
+		expect(files.read("nested/中文/笔记.txt").toString()).toBe("hello");
+		files.remove("nested/中文/笔记.txt");
+		expect(files.list("nested/中文")).toEqual([]);
 		expect(sandboxTools(files).map(tool => tool.name)).toEqual(["sandbox_read", "sandbox_write", "sandbox_list"]);
 	});
 	test("absolute, traversal, drive, UNC, URI and NUL are refused for reads and writes", async () => {
