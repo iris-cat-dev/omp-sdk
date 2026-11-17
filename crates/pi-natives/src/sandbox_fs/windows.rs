@@ -25,12 +25,12 @@ use windows_sys::{
 		System::SystemServices::{FILE_FS_DEVICE_INFORMATION, FILE_REMOTE_DEVICE},
 	},
 	Win32::{
-		Foundation::{HANDLE, INVALID_HANDLE_VALUE, NTSTATUS, OBJ_CASE_INSENSITIVE,
+		Foundation::{HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE,
 			STATUS_NO_MORE_FILES, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_SUCCESS, UNICODE_STRING},
 		Storage::FileSystem::{
-			GetFileType, GetVolumeNameForVolumeMountPointW, ReOpenFile, DELETE, FILE_ACCESS_RIGHTS,
+			GetFileType, GetVolumeNameForVolumeMountPointW, DELETE, FILE_ACCESS_RIGHTS,
 			FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-			FILE_DEVICE_DISK, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+			FILE_DEVICE_DISK, FILE_LIST_DIRECTORY,
 			FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ,
 			FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_TYPE_DISK, FILE_WRITE_DATA, SYNCHRONIZE,
 		},
@@ -236,14 +236,11 @@ impl Root {
 	}
 	fn directory(&self, components: &[&str]) -> Result<OwnedHandle> {
 		directory(self.handle.as_raw_handle())?;
-		// SAFETY: ReOpenFile reopens the pinned object, not its former pathname.
-		// It creates an independent directory cursor. BACKUP_SEMANTICS permits
-		// directory handles; no backup privilege is enabled by this operation.
-		let raw = unsafe { ReOpenFile(self.handle.as_raw_handle(), DIRECTORY_ACCESS | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-			SHARE, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT) };
-		if raw == INVALID_HANDLE_VALUE || raw.is_null() { return Err(denied()); }
-		// SAFETY: successful ReOpenFile returns a newly owned handle.
-		let mut handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+		// An empty NT name reopens RootDirectory itself, retaining the pinned object
+		// and giving each operation an independent directory cursor. ReOpenFile
+		// rejects these native directory handles; no ambient path or backup intent.
+		let mut handle = native_open(self.handle.as_raw_handle(), "", DIRECTORY_ACCESS,
+			FILE_OPEN, FILE_DIRECTORY_FILE, SHARE).map_err(|_| denied())?;
 		directory(handle.as_raw_handle())?;
 		for part in components {
 			handle = open_at(handle.as_raw_handle(), part, DIRECTORY_ACCESS, FILE_OPEN, FILE_DIRECTORY_FILE, SHARE)?;
