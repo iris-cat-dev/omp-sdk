@@ -8,8 +8,9 @@ const parent = path.join(root, "nested");
 const parked = path.join(root, "parked");
 while (Atomics.load(state, 0) === 0) {
 	fs.renameSync(parent, parked);
-	fs.symlinkSync(outside, parent);
-	fs.unlinkSync(parent);
+	fs.symlinkSync(outside, parent, process.platform === "win32" ? "junction" : "dir");
+	if (process.platform === "win32") fs.rmdirSync(parent);
+	else fs.unlinkSync(parent);
 	fs.renameSync(parked, parent);
 	if (Atomics.add(state, 1, 1) === 0) parentPort!.postMessage("ready");
 }

@@ -31,7 +31,7 @@ const { session } = await createAgentSession({
 
 By default the model receives only `sandbox_read`, `sandbox_write` and `sandbox_list`. Reads/writes are limited to 1 MiB; directory lists to 1024 entries. Paths are relative; `.` lists the namespace root. Absolute paths, traversal, URI/drive/UNC aliases, symlinks, special files and multiply-linked files are rejected. Parent directories for model writes must already exist.
 
-The native POSIX implementation opens every component relative to a pinned directory descriptor with `O_NOFOLLOW`; replacing the root or racing a parent symlink cannot widen the grant. Writes publish a fresh inode instead of truncating a potentially linked file. The root must be absolute, must exist as a real directory, and cannot be the filesystem root or user home. Unsupported platforms or addons without this primitive fail closed; there is no realpath-only fallback. This restricts model capabilities, not the trusted host process or its model transport.
+The native implementation opens every component relative to a pinned directory handle: POSIX uses `O_NOFOLLOW`; Windows uses NT handle-relative opens that reject reparse points, junctions, device names and alternate data streams. Replacing the root or racing a parent link cannot widen the grant. Writes publish a fresh inode instead of truncating a potentially linked file. The root must be absolute, must exist as a real directory, and cannot be the filesystem root or user home. Windows accepts local drive roots such as `C:\qq-files` and their `\\?\` long-path form; UNC, mapped-network and SUBST roots are refused. Unsupported platforms or addons without this primitive fail closed; there is no realpath-only fallback. This restricts model capabilities, not the trusted host process or its model transport.
 
 Opt in to isolated JavaScript and public HTTP requests independently:
 
@@ -64,6 +64,8 @@ From the monorepo root, with the source test process resolving the newly built r
 bun test packages/coding-agent/test/sandbox-fs.test.ts packages/coding-agent/test/sdk-sandbox.test.ts packages/coding-agent/test/sandbox-js.test.ts packages/coding-agent/test/sandbox-fetch.test.ts
 OMP_SANDBOX_TEST_RPC_ENTRY=/path/to/staged-sdk/dist/node/rpc.mjs bun test packages/coding-agent/test/node-rpc-sandbox.test.ts
 ```
+
+Desktop's [`installed-artifact smoke`](../../../scripts/packaging/smoke-sdk-artifact.mjs) also exercises sandbox startup and native isolation on the native build host, including Windows in the packaging workflow.
 
 The RPC regression requires an explicit staged entry and otherwise skips; it inspects actual startup, tool mounting, literal prompts, provider request privacy and durable resume using an isolated local SSE transport. Its stack regression checks actual registered JavaScript execution and recovery in Node. Set `OMP_SANDBOX_TEST_NODE` to the Desktop executable to use its packaged Node runtime instead of `node` on `PATH`. For genuine model tool calls, supply a real tool-capable provider and its approved credentials, isolate `HOME` and `PASEO_HOME`, then run:
 

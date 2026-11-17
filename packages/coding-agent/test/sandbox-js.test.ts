@@ -39,7 +39,7 @@ async function httpFixture(handler: http.RequestListener) {
 	return fixture;
 }
 
-describe.skipIf(process.platform === "win32")("sandbox_js isolated QuickJS behavior", () => {
+describe("sandbox_js isolated QuickJS behavior", () => {
 	test("return, await, UTF-8 files and bounded logs use only the supplied filesystem", async () => {
 		const { files } = await fixture();
 		const result = await execute(files, `
@@ -83,9 +83,11 @@ describe.skipIf(process.platform === "win32")("sandbox_js isolated QuickJS behav
 		const { directory, root, files } = await fixture();
 		const outside = path.join(directory, "outside");
 		await fs.writeFile(outside, "outside-secret");
-		await fs.symlink(outside, path.join(root, "symlink"));
+		await fs.mkdir(path.join(directory, "outside-dir"));
+		await fs.writeFile(path.join(directory, "outside-dir", "secret"), "outside-secret");
+		await fs.symlink(path.join(directory, "outside-dir"), path.join(root, "linked-dir"), process.platform === "win32" ? "junction" : "dir");
 		await fs.link(outside, path.join(root, "hardlink"));
-		for (const denied of [outside, "../outside", "file:///etc/passwd", "symlink", "hardlink"]) {
+		for (const denied of [outside, "../outside", "file:///etc/passwd", "linked-dir/secret", "hardlink"]) {
 			for (const operation of [`sandbox.read(${JSON.stringify(denied)})`, `sandbox.write(${JSON.stringify(denied)}, "tampered")`]) {
 				const result = await execute(files, `${operation}; return "unexpected";`);
 				expect(result.isError).toBe(true);

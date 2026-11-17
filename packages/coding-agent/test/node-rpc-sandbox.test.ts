@@ -35,7 +35,7 @@ async function sandboxModelTransport(filesystem: typeof fs, url: string, options
 	];
 	return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
 }
-describe.skipIf(!entry || !fs.existsSync(entry) || process.platform === "win32")("staged Node SDK sandbox RPC admission", () => {
+describe.skipIf(!entry || !fs.existsSync(entry))("staged Node SDK sandbox RPC admission", () => {
 	test("registered JavaScript recursion stays a guest error and the next call recovers in Node", () => {
 		using temp = TempDir.createSync("@node-sandbox-stack-");
 		const root = temp.join("root"); const agentDir = temp.join("agent");
@@ -58,7 +58,7 @@ try {
 } finally { await session?.dispose(); auth.close(); }`;
 		const probe = spawnSync(process.env.OMP_SANDBOX_TEST_NODE ?? "node", ["--input-type=module", "-e", program], {
 			cwd: root,
-			env: { PATH: process.env.PATH, HOME: temp.path(), PI_CODING_AGENT_DIR: agentDir, PASEO_HOME: temp.join("paseo"), ELECTRON_RUN_AS_NODE: "1" },
+			env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: temp.path(), USERPROFILE: temp.path(), PI_CODING_AGENT_DIR: agentDir, PASEO_HOME: temp.join("paseo"), ELECTRON_RUN_AS_NODE: "1" },
 			encoding: "utf8", timeout: 30_000,
 		});
 		expect(probe.status, probe.stderr).toBe(0);
@@ -80,7 +80,7 @@ try {
 				desktopPluginPrompts: true,
 				extraArgs: ["--tools", "bash,eval,task,read,write", "--append-system-prompt", "UNSAFE_APPEND_SENTINEL"],
 			};
-			const env = { HOME: temp.path(), PASEO_HOME: temp.join("paseo"), PI_CODING_AGENT_DIR: agentDir, PI_CONFIG_DIR: ".omp", PI_PROFILE: "", OPENAI_API_KEY: "test-local-transport-only", SANDBOX_REQUEST_CAPTURE: captureFile, USER: "HOST_IDENTITY_SENTINEL", HOST_PRIVATE_VALUE: "HOST_ENV_SENTINEL", XDG_DATA_HOME: temp.join("data"), XDG_STATE_HOME: temp.join("state"), XDG_CACHE_HOME: temp.join("cache") };
+			const env = { HOME: temp.path(), USERPROFILE: temp.path(), PASEO_HOME: temp.join("paseo"), PI_CODING_AGENT_DIR: agentDir, PI_CONFIG_DIR: ".omp", PI_PROFILE: "", OPENAI_API_KEY: "test-local-transport-only", SANDBOX_REQUEST_CAPTURE: captureFile, USER: "HOST_IDENTITY_SENTINEL", HOST_PRIVATE_VALUE: "HOST_ENV_SENTINEL", XDG_DATA_HOME: temp.join("data"), XDG_STATE_HOME: temp.join("state"), XDG_CACHE_HOME: temp.join("cache") };
 			const launch = (session?: string, sandbox = true) => new RpcClient({
 				command: () => ["node", "--input-type=module", "-e", `import * as fs from "node:fs";import { startNodeRpcHost, NODE_RPC_SANDBOX_VERSION } from ${JSON.stringify(pathToFileURL(entry).href)};if(![1,2,3].includes(NODE_RPC_SANDBOX_VERSION))throw Error("Sandbox support unavailable");globalThis.fetch=(url,options)=>(${sandboxModelTransport.toString()})(fs,url,options);await startNodeRpcHost(${JSON.stringify({ ...options, session, sandbox: sandbox ? options.sandbox : undefined })});`],
 				cwd: root, env,

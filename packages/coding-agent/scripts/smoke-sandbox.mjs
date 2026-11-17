@@ -12,7 +12,7 @@ if (!sdkDirectory || !model) throw new Error("Usage: node scripts/smoke-sandbox.
 const load = createRequire(import.meta.url);
 const sdk = load(path.resolve(sdkDirectory, "sdk.mjs"));
 const rpc = load(path.resolve(sdkDirectory, "rpc.mjs"));
-assert([1, 2].includes(rpc.NODE_RPC_SANDBOX_VERSION), "Old or unknown SDK must fail closed");
+assert([1, 2, 3].includes(rpc.NODE_RPC_SANDBOX_VERSION), "Old or unknown SDK must fail closed");
 const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "omp-sandbox-smoke-")));
 const root = path.join(base, "root");
 const agentDir = path.join(base, "agent");
@@ -47,9 +47,11 @@ try {
   assert.deepEqual([...observed].sort(), names, "Real model must use all three sandbox tools");
   assert.equal(await fs.readFile(path.join(root, "smoke.txt"), "utf8"), "sandbox-ok");
   // Exercise native tool implementations directly as well as the real model catalog.
-  await fs.symlink(path.join(base, "outside.txt"), path.join(root, "link.txt"));
+  await fs.mkdir(path.join(base, "outside-dir"));
+  await fs.writeFile(path.join(base, "outside-dir", "secret.txt"), "SANDBOX_OUTSIDE_SECRET");
+  await fs.symlink(path.join(base, "outside-dir"), path.join(root, "linked-dir"), process.platform === "win32" ? "junction" : "dir");
   await fs.link(path.join(base, "outside.txt"), path.join(root, "hardlink.txt"));
-  for (const target of ["../outside.txt", path.join(base, "outside.txt"), "file:///etc/passwd", "link.txt", "hardlink.txt"]) {
+  for (const target of ["../outside.txt", path.join(base, "outside.txt"), "file:///etc/passwd", "linked-dir/secret.txt", "hardlink.txt"]) {
     const read = session.agent.state.tools.find(tool => tool.name === "sandbox_read");
     const write = session.agent.state.tools.find(tool => tool.name === "sandbox_write");
     assert.equal((await read.execute("read-denied", { path: target })).isError, true);

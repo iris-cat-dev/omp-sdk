@@ -21,7 +21,7 @@ async function fixture() {
 	return { directory, root, files };
 }
 
-describe.skipIf(process.platform === "win32")("native descriptor-bound sandbox", () => {
+describe("native handle-bound sandbox", () => {
 	test("inside read/write/list; exclusive writes; stat/mkdir/remove are host-only", async () => {
 		const { files } = await fixture();
 		files.mkdir("nested");
@@ -44,7 +44,7 @@ describe.skipIf(process.platform === "win32")("native descriptor-bound sandbox",
 		}
 		expect(await fs.readFile(path.join(directory, "outside"), "utf8")).toBe("outside-secret");
 	});
-	test("leaf/parent symlinks and hardlinks cannot disclose or overwrite outside bytes", async () => {
+	test.skipIf(process.platform === "win32")("leaf/parent symlinks and hardlinks cannot disclose or overwrite outside bytes", async () => {
 		const { directory, root, files } = await fixture();
 		await fs.mkdir(path.join(directory, "outside-dir"));
 		const outside = path.join(directory, "outside-dir", "secret");
@@ -58,6 +58,37 @@ describe.skipIf(process.platform === "win32")("native descriptor-bound sandbox",
 		}
 		expect(() => files.list("parent")).toThrow("denied");
 		expect(await fs.readFile(outside, "utf8")).toBe("outside-secret");
+	});
+	test("directory junctions and hardlinks cannot widen any filesystem operation", async () => {
+		const { directory, root, files } = await fixture();
+		const outside = path.join(directory, "outside-dir");
+		await fs.mkdir(outside);
+		await fs.writeFile(path.join(outside, "secret"), "outside-secret");
+		await fs.symlink(outside, path.join(root, "parent"), process.platform === "win32" ? "junction" : "dir");
+		await fs.link(path.join(outside, "secret"), path.join(root, "hardlink"));
+		for (const denied of ["parent/secret", "hardlink"]) {
+			expect(() => files.read(denied)).toThrow("denied");
+			expect(() => files.write(denied, Buffer.from("tamper"))).toThrow("denied");
+			expect(() => files.stat(denied)).toThrow("denied");
+			expect(() => files.remove(denied)).toThrow("denied");
+		}
+		expect(() => files.list("parent")).toThrow("denied");
+		expect(() => files.mkdir("parent/created")).toThrow("denied");
+		expect(() => files.list(".")).toThrow("denied");
+		expect(await fs.readdir(outside)).toEqual(["secret"]);
+		expect(await fs.readFile(path.join(outside, "secret"), "utf8")).toBe("outside-secret");
+	});
+	test.skipIf(process.platform !== "win32")("Windows device, stream and normalized-name aliases cannot address files", async () => {
+		const { root, files } = await fixture();
+		files.write("note", Buffer.from("original"));
+		for (const denied of ["note:secret", "note.", "note ", "CON", "NUL.txt", "COM1", "LPT9.txt", "\\\\?\\C:\\outside"]) {
+			expect(() => files.read(denied)).toThrow("denied");
+			expect(() => files.write(denied, Buffer.from("tamper"))).toThrow("denied");
+			expect(() => files.stat(denied)).toThrow("denied");
+			expect(() => files.mkdir(denied)).toThrow("denied");
+			expect(() => files.remove(denied)).toThrow("denied");
+		}
+		expect(await fs.readFile(path.join(root, "note"), "utf8")).toBe("original");
 	});
 	test("root replacement does not rebind the held directory descriptor", async () => {
 		const { directory, root, files } = await fixture();
@@ -77,7 +108,7 @@ describe.skipIf(process.platform === "win32")("native descriptor-bound sandbox",
 		await fs.rename(path.join(root, "nested"), path.join(root, "old-nested"));
 		await fs.mkdir(path.join(directory, "outside-dir"));
 		await fs.writeFile(path.join(directory, "outside-dir", "file"), "outside-secret");
-		await fs.symlink(path.join(directory, "outside-dir"), path.join(root, "nested"));
+		await fs.symlink(path.join(directory, "outside-dir"), path.join(root, "nested"), process.platform === "win32" ? "junction" : "dir");
 		expect(() => files.read("nested/file")).toThrow("denied");
 		expect(() => files.write("nested/file", Buffer.from("tamper"))).toThrow("denied");
 		expect(await fs.readFile(path.join(directory, "outside-dir", "file"), "utf8")).toBe("outside-secret");
@@ -128,4 +159,8 @@ test("broad roots are refused before native access", async () => {
 	await expect(openSandboxFs({ root: path.parse(process.cwd()).root })).rejects.toThrow("cannot be");
 	await expect(openSandboxFs({ root: os.homedir() })).rejects.toThrow("cannot be");
 	await expect(openSandboxFs({ root: "relative" })).rejects.toThrow("absolute");
+});
+
+test.skipIf(process.platform !== "win32")("case aliases of the Windows user home cannot become a sandbox root", async () => {
+	await expect(openSandboxFs({ root: os.homedir().toUpperCase() })).rejects.toThrow("cannot be");
 });

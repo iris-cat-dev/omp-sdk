@@ -33,7 +33,7 @@ export async function openSandboxFs(sandbox: AgentSandbox & { maxBytes?: number 
 	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 200 * 1024 * 1024) throw new Error("Invalid sandbox file byte limit");
 	const root = await fs.realpath(sandbox.root).catch(error => { throw new Error("Sandbox root cannot be opened", { cause: error }); });
 	const home = await fs.realpath(os.homedir()).catch(error => { throw new Error("Sandbox home boundary cannot be resolved", { cause: error }); });
-	if (root === path.parse(root).root || root === home) throw new Error("Sandbox root cannot be the filesystem root or user home");
+	if (root === path.parse(root).root || (process.platform === "win32" ? root.toLowerCase() === home.toLowerCase() : root === home)) throw new Error("Sandbox root cannot be the filesystem root or user home");
 	const requested = await fs.lstat(sandbox.root).catch(error => { throw new Error("Sandbox root cannot be opened", { cause: error }); });
 	if (!requested.isDirectory() || requested.isSymbolicLink()) throw new Error("Sandbox root must be a real directory");
 	const Constructor = sandboxModule.SandboxFs;

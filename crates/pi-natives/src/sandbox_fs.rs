@@ -1,5 +1,5 @@
 //! Model-capability file namespace. No pathname operation is relative to ambient cwd.
-//! Each component is opened relative to a pinned directory descriptor with NOFOLLOW.
+//! Each component is opened relative to a pinned directory handle without following links.
 use napi::{bindgen_prelude::Buffer, Error, Result};
 use napi_derive::napi;
 
@@ -170,51 +170,58 @@ mod posix {
 	}
 }
 
+#[cfg(windows)]
+#[path = "sandbox_fs/windows.rs"]
+mod windows;
+
 /// Pinned, bounded file namespace; unsupported platforms fail closed.
 #[napi]
 pub struct SandboxFs {
 	#[cfg(unix)]
 	root: Option<posix::Root>,
+	#[cfg(windows)]
+	root: Option<windows::Root>,
 }
 #[napi]
 impl SandboxFs {
 	#[napi(constructor)]
 	pub fn new(root: String, max_bytes: Option<u32>) -> Result<Self> {
 		#[cfg(unix)] { Ok(Self { root: Some(posix::Root::open(&root, max_bytes.unwrap_or(1024 * 1024))?) }) }
-		#[cfg(not(unix))] { let _ = (root, max_bytes); Err(denied()) }
+		#[cfg(windows)] { Ok(Self { root: Some(windows::Root::open(&root, max_bytes.unwrap_or(1024 * 1024))?) }) }
+		#[cfg(not(any(unix, windows)))] { let _ = (root, max_bytes); Err(denied()) }
 	}
 	#[napi]
 	pub fn read(&self, path: String, max_bytes: Option<u32>) -> Result<Buffer> {
-		#[cfg(unix)] { self.root.as_ref().ok_or_else(denied)?.read(&path, max_bytes) }
-		#[cfg(not(unix))] { let _ = (path, max_bytes); Err(denied()) }
+		#[cfg(any(unix, windows))] { self.root.as_ref().ok_or_else(denied)?.read(&path, max_bytes) }
+		#[cfg(not(any(unix, windows)))] { let _ = (path, max_bytes); Err(denied()) }
 	}
 	#[napi]
 	pub fn list(&self, path: String) -> Result<Vec<SandboxEntry>> {
-		#[cfg(unix)] { self.root.as_ref().ok_or_else(denied)?.list(&path) }
-		#[cfg(not(unix))] { let _ = path; Err(denied()) }
+		#[cfg(any(unix, windows))] { self.root.as_ref().ok_or_else(denied)?.list(&path) }
+		#[cfg(not(any(unix, windows)))] { let _ = path; Err(denied()) }
 	}
 	#[napi]
 	pub fn write(&self, path: String, content: Buffer, exclusive: Option<bool>) -> Result<()> {
-		#[cfg(unix)] { self.root.as_ref().ok_or_else(denied)?.write(&path, &content, exclusive.unwrap_or(false)) }
-		#[cfg(not(unix))] { let _ = (path, content, exclusive); Err(denied()) }
+		#[cfg(any(unix, windows))] { self.root.as_ref().ok_or_else(denied)?.write(&path, &content, exclusive.unwrap_or(false)) }
+		#[cfg(not(any(unix, windows)))] { let _ = (path, content, exclusive); Err(denied()) }
 	}
 	#[napi]
 	pub fn stat(&self, path: String) -> Result<SandboxStat> {
-		#[cfg(unix)] { self.root.as_ref().ok_or_else(denied)?.metadata(&path) }
-		#[cfg(not(unix))] { let _ = path; Err(denied()) }
+		#[cfg(any(unix, windows))] { self.root.as_ref().ok_or_else(denied)?.metadata(&path) }
+		#[cfg(not(any(unix, windows)))] { let _ = path; Err(denied()) }
 	}
 	#[napi]
 	pub fn mkdir(&self, path: String) -> Result<()> {
-		#[cfg(unix)] { self.root.as_ref().ok_or_else(denied)?.mkdir(&path) }
-		#[cfg(not(unix))] { let _ = path; Err(denied()) }
+		#[cfg(any(unix, windows))] { self.root.as_ref().ok_or_else(denied)?.mkdir(&path) }
+		#[cfg(not(any(unix, windows)))] { let _ = path; Err(denied()) }
 	}
 	#[napi]
 	pub fn remove(&self, path: String) -> Result<()> {
-		#[cfg(unix)] { self.root.as_ref().ok_or_else(denied)?.remove(&path) }
-		#[cfg(not(unix))] { let _ = path; Err(denied()) }
+		#[cfg(any(unix, windows))] { self.root.as_ref().ok_or_else(denied)?.remove(&path) }
+		#[cfg(not(any(unix, windows)))] { let _ = path; Err(denied()) }
 	}
 	#[napi]
 	pub fn close(&mut self) {
-		#[cfg(unix)] { self.root = None; }
+		#[cfg(any(unix, windows))] { self.root = None; }
 	}
 }

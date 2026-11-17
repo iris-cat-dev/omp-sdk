@@ -43,7 +43,7 @@ function assertBoundary(session: AgentSession, root: string) {
 	expect(() => session.executeBash("whoami")).toThrow("Sandbox");
 }
 
-describe.skipIf(process.platform === "win32")("SDK mandatory sandbox lifecycle", () => {
+describe("SDK mandatory sandbox lifecycle", () => {
 	test("mounts only safe file tools, ignores ambient/provider-extension grants and preserves model selection", async () => {
 		const { root, model, create } = await fixture();
 		await fs.writeFile(path.join(root, "AGENTS.md"), "HOST_CONTEXT_SENTINEL");
@@ -194,8 +194,11 @@ describe.skipIf(process.platform === "win32")("SDK mandatory sandbox lifecycle",
 		expect(lastBody.input_references?.[0]?.url).toBe(`data:image/png;base64,${png.toString("base64")}`);
 		expect(JSON.stringify(edited)).not.toContain(root);
 		const outside = path.join(directory, "outside.png"); await fs.writeFile(outside, png);
-		await fs.symlink(outside, path.join(root, "symbolic.png")); await fs.link(outside, path.join(root, "hard.png"));
-		for (const image of [outside, "../outside.png", "symbolic.png", "hard.png", "https://example.com/image.png"]) await expect(tool.execute("denied-input", { subject: "Edit", input: [{ path: image }] })).rejects.toThrow("access denied");
+		await fs.mkdir(path.join(directory, "outside-input"));
+		await fs.writeFile(path.join(directory, "outside-input", "pixel.png"), png);
+		await fs.symlink(path.join(directory, "outside-input"), path.join(root, "linked-input"), process.platform === "win32" ? "junction" : "dir");
+		await fs.link(outside, path.join(root, "hard.png"));
+		for (const image of [outside, "../outside.png", "linked-input/pixel.png", "hard.png", "https://example.com/image.png"]) await expect(tool.execute("denied-input", { subject: "Edit", input: [{ path: image }] })).rejects.toThrow("access denied");
 		await expect(tool.execute("inline", { subject: "Edit", input: [{ data: png.toString("base64"), mime_type: "image/png" }] })).rejects.toThrow();
 		await expect(tool.execute("inline-with-path", { subject: "Edit", input: [{ path: "reference.png", data: png.toString("base64") }] })).rejects.toThrow();
 		const before = requests; enabled = false;
@@ -208,7 +211,7 @@ describe.skipIf(process.platform === "win32")("SDK mandatory sandbox lifecycle",
 		fail = false;
 		const outsideDirectory = path.join(directory, "outside-output"); await fs.mkdir(outsideDirectory);
 		await fs.rename(path.join(root, ".qqbot-media/generated"), path.join(directory, "saved-generated"));
-		await fs.symlink(outsideDirectory, path.join(root, ".qqbot-media/generated"));
+		await fs.symlink(outsideDirectory, path.join(root, ".qqbot-media/generated"), process.platform === "win32" ? "junction" : "dir");
 		await expect(tool.execute("linked-output", { subject: "Must stay inside" })).rejects.toThrow("Host image generation failed");
 		expect(await fs.readdir(outsideDirectory)).toEqual([]);
 	});
