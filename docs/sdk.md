@@ -243,7 +243,7 @@ or x64 native dependency closure. Complete modules, worker host, chunks, runtime
 resources, licenses, and selected native sidecars are retained in both modes.
 
 The pinned release contract is `sdk/node-release.json`:
-`iris-cat-dev/omp-sdk`, tag `sdk-v18.14.0-desktop-core.1`, Desktop/core, and
+`iris-cat-dev/omp-sdk`, tag `sdk-v18.14.0-desktop-core.2`, Desktop/core, and
 `darwin-x64`, `darwin-arm64`, `linux-x64`, `linux-arm64`. Linux hosts must use
 glibc; Windows and musl are not supported. The SDK version comes from the
 coding-agent package manifest, not a separate npm version or a `latest` tag.
@@ -268,8 +268,10 @@ node scripts/smoke-node-sdk.mjs sdk-release-dist
 The smoke copies the exact tarball into a throwaway npm project, generates its
 lockfile, checks the archive integrity, and runs `npm ci --offline --ignore-scripts`.
 Its installed Node probe exercises SDK imports, native version/capabilities,
-write/read/Shell tools, embedded SDK documentation, native SQLite, the real sharp
-image codec, koffi, an extension-module alias and the installed shared worker host.
+write/read/Shell tools, structured full-file search, embedded SDK documentation,
+native SQLite, the real sharp image codec, koffi, an extension-module alias and
+the installed shared worker host. It also verifies durable RPC startup,
+`append_session_annotation` acknowledgment and cold session restoration.
 It cannot import the source SDK or silently use the source `node_modules` tree.
 A successful smoke produces a target/byte-hash/Node-version receipt; a failed
 smoke removes any old receipt. Local model/API credentials are not needed.

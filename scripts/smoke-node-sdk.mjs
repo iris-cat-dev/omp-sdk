@@ -36,6 +36,7 @@ export async function smokeNodeSdkArchive(directory) {
       dependencies: { [config.packageName]: "file:omp-sdk.tgz" },
     }, null, 2)}\n`);
     await cp(path.join(scripts, "node-sdk-installed-probe.mjs"), path.join(project, "probe.mjs"));
+    await cp(path.join(scripts, "node-sdk-installed-rpc-probe.mjs"), path.join(project, "node-sdk-installed-rpc-probe.mjs"));
     function run(command, args) {
       const result = spawnSync(command, args, { cwd: project, env, stdio: "inherit", timeout: 120_000 });
       if (result.error) throw result.error;

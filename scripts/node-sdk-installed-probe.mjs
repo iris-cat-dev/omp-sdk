@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { smokeInstalledRpc } from "./node-sdk-installed-rpc-probe.mjs";
 
 // This file is copied into the fresh npm project, so bare SDK imports cannot
 // accidentally resolve the source checkout or any of its installed dependencies.
@@ -28,6 +29,17 @@ assert.throws(() => native.highlightCode("const value = 1;", "javascript", {}), 
 
 const cwd = path.join(process.cwd(), "work");
 await mkdir(cwd);
+// One line has two hits after a surrogate pair: offsets and lengths are UTF-16,
+// not UTF-8 byte offsets, code points, or one result per occurrence.
+const searchFile = path.join(cwd, "search.txt");
+await writeFile(searchFile, "😀é é  \r\nneedle needle\n");
+const search = await native.searchFiles({ path: searchFile, pattern: "é|needle", maxMatches: 5 });
+assert.equal(search.totalMatches, 4);
+assert.equal(search.matches.length, 2);
+assert.deepEqual(search.matches.map(({ lineNumber, line, ranges }) => ({ lineNumber, line, ranges })), [
+  { lineNumber: 1, line: "😀é é  ", ranges: [{ start: 2, length: 1 }, { start: 4, length: 1 }] },
+  { lineNumber: 2, line: "needle needle", ranges: [{ start: 0, length: 6 }, { start: 7, length: 6 }] },
+]);
 const session = {
   cwd, hasUI: false, enableLsp: false, enableMCP: false, hasEditTool: true,
   settings: sdk.Settings.isolated({ "lsp.enabled": false, "lsp.formatOnWrite": false, "lsp.diagnosticsOnWrite": false }),
@@ -98,4 +110,5 @@ try {
     await exited;
   }
 }
+await smokeInstalledRpc(path.join(process.cwd(), "rpc-work"));
 console.log(`Installed SDK ${manifest.version} smoke passed on ${process.platform}-${process.arch}`);
