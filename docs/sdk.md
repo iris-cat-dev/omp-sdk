@@ -51,9 +51,10 @@ plus the provider helpers `pi-ai/providers/transform-messages`,
 `pi-ai/utils/{retry-after,tool-call-arguments,empty-completion-retry}`,
 `pi-catalog/build`, and `pi-tui/chrome/qrcode` (all under `@oh-my-pi/`).
 It does not mirror every source-file export. Extensions needing other deep SDK
-imports should use the generic target. Tools, workers, RPC, and session
-persistence remain reachable through the same SDK APIs.
-`gen:bundle:node` still writes the independent, generic `dist/node/` artifact.
+imports should use the generic target. Tools, RPC, and session persistence remain
+reachable through the same SDK APIs; offline workers require the `full` profile.
+`gen:bundle:node` writes the independent generic `dist/node/` artifact and defaults
+to `full`; `gen:bundle:desktop` defaults to `core`.
 
 Node uses its native SQLite driver with the existing OMP schemas and JSONL
 session format. Executable plugins, extensions, custom tools/commands, and eval
@@ -81,15 +82,45 @@ when the embedded engine lacks `RegExp.escape` or `DisposableStack`; native
 implementations are retained. The complete `core-js` npm tree is not required.
 Bun CLI entrypoints do not load this compatibility initialization.
 
-Compact Desktop bundles can select the `core` profile when staging the SDK.
-The loaded package's `ompNodeSdk.profile` marker determines the runtime profile,
-not the launcher's environment. Unmarked packages and Bun retain the full profile.
-Core keeps remote/API models, native tools, browser support, RPC, saved sessions,
-and cancellation, but does not bundle local embedding, offline speech, or tiny
-helper inference runtimes. Those offline operations fail with guidance to use a
-remote service or the full profile instead of downloading missing runtimes.
+Select the JavaScript profile when building, then stage that same profile:
+
+```bash
+bun --cwd=packages/coding-agent run gen:bundle:desktop --profile=core
+bun --cwd=packages/coding-agent run gen:bundle:node --profile=full
+```
+
+Both targets accept `--profile=core|full`. The exported build API is
+`bundleNodeSdk(outDir?, buildTarget = "generic", profile?)`; omitted profiles
+default to `full` for generic and `core` for Desktop. `modules.json`,
+`runtime-dependencies.json`, and `target/node-sdk-build-inputs/<target>.json`
+record the built profile. Staging refuses a different profile; rebuild before
+switching profiles. The installed package's `ompNodeSdk.profile` must match the
+compiled artifact, independently of the launcher's environment. Unmarked source
+builds use their compiled profile; source/Bun execution without a compiled profile
+defaults to `full`.
+
+Core excludes local embedding, offline speech, tiny inference worker/client
+implementations, SmolLM downloads, and the MLX Python script from the JavaScript
+graph. Public offline operations fail with guidance to configure a remote
+service or use `full`, before workers or downloads start. Remote/API models,
+remote TTS, embeddings and title models, native tools, browser support, RPC,
+saved sessions, and cancellation remain available. Ngram and Apple prediction
+also remain available when supported by the selected native addon.
 Memory can use remote embeddings and remote inference, or explicitly disabled
 embeddings/inference; default local memory configuration is unavailable in core.
+
+Source/Bun and `full` builds re-export the original local clients and helpers,
+preserving subclass overrides, live helper bindings, and process-shared client
+shutdown. The `core` build selects separate disabled-capability implementations
+for clients, downloaders, local embedding initialization, and offline worker
+dispatch, with no import edge to their full inference implementations. Shared
+worker inbox installation, IPC transport, and parent-disconnect cleanup remain
+identical between profiles.
+
+Node builds exclude the Bun-only extension loading and source-rewrite graph.
+JavaScript ESM/CJS extensions retain host aliases, shared module identity,
+cache/reload behavior, and access to adjacent resources. The Bun CLI keeps its
+original loader and TypeScript support.
 
 The JavaScript `core` profile is independent of native Cargo features. Desktop
 also uses an isolated native addon built with:
@@ -103,9 +134,11 @@ This forces the release profile with `--no-default-features`, uses
 `packages/natives/native/desktop/`. Rebuild it after native source or package
 version changes before staging Desktop. It disables the default-on `pi-natives`
 features `smollm`, `live-voice`, `wasm-grammars`, `pdf`, `vcs-jj`, `snapcompact`,
-`audio`, and `local-assistance`. Native PDF extraction, Jujutsu, image-based
-Snapcompact compression, recording/playback, prediction, spelling, and Apple
-Foundation Models are unavailable in Desktop, including its `full` profile.
+`audio`, `local-assistance`, and `syntax-highlighting`. Native PDF extraction,
+Jujutsu, image-based Snapcompact compression, recording/playback, prediction,
+spelling, Apple Foundation Models, and syntect TUI syntax highlighting are
+unavailable in Desktop, including its `full` profile. OMP Desktop's independent
+Lezer renderer/editor highlighter remains available.
 Git, file editing/search, Shell, ordinary images, and built-in code parsing and
 AST operations remain available. Browser PDF screenshots/printing are independent
 of native PDF extraction; remote TTS/transcription data APIs remain independent
@@ -138,8 +171,8 @@ existing x86-64-v2 baseline filename and CPU floor even on an AVX2 build host;
 ordinary local builds retain their automatic baseline/modern selection.
 
 Import `readNativeCapabilities()` from the SDK to inspect the loaded binary's
-`smollm`, `liveVoice`, `wasmGrammars`, `pdf`, `jujutsu`, `snapcompact`, `audio`, and
-`localAssistance` flags rather than inferring support from the JS profile or
+`smollm`, `liveVoice`, `wasmGrammars`, `pdf`, `jujutsu`, `snapcompact`, `audio`,
+`localAssistance`, and `syntaxHighlighting` flags rather than inferring support from the JS profile or
 declarations. The validated report is immutable and cached. Explicit activation
 of an omitted engine fails before downloads or native construction; saved
 settings are effectively disabled. Existing Snapcompact archives remain readable
@@ -186,6 +219,10 @@ profile, and build-mode options have the defaults shown above. `generic`/`full`
 remain available explicitly. Release staging returns the manifest fields plus
 `archive` (`omp-sdk.tgz`) and `directory` (the staged SDK package). It verifies
 the final npm archive rather than just the build tree.
+
+Koffi staging keeps its JavaScript entries, target-native addon (including the
+Linux musl fallback), and root/vendor licenses. Source, documentation, types,
+install scripts, and build configuration are not runtime dependencies.
 
 `buildMode: "development"` instead validates and copies the complete runnable
 directory without the final npm pack/compression step and returns `archive: null`.

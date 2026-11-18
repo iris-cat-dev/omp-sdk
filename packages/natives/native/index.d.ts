@@ -3014,6 +3014,7 @@ export interface NativeCapabilities {
   snapcompact: boolean
   audio: boolean
   localAssistance: boolean
+  syntaxHighlighting: boolean
 }
 
 /** Construction options for [`NativeOAuthCallback`]. */

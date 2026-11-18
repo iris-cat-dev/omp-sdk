@@ -131,14 +131,17 @@ export interface NativeAddonStatus {
 	packageVersion: string;
 	/** True when the addon carries a different release than this package. */
 	stale: boolean;
+	/** Compiled capabilities when the addon reports them. */
+	capabilities?: { syntaxHighlighting?: boolean };
 }
 
 /** The addon behind this process's exports; `null` before a successful load. */
 export function nativeAddonStatus(): NativeAddonStatus | null;
 
 /**
- * Stub for an export the addon does not provide: `undefined` on a current
- * addon, a throwing function on a stale one.
+ * Stub for an export the addon does not provide: a capability error for
+ * disabled syntax highlighting, a version diagnostic on a stale addon, and
+ * `undefined` for other absent exports on a current addon.
  */
 export function missingNativeExport(
 	symbolName: string,

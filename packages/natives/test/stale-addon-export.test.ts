@@ -7,9 +7,9 @@
  * tool used it first (every `write` call, after the read-projection guard
  * landed), with nothing naming the stale addon.
  *
- * `missingNativeExport` closes that gap on the stale path only. On a current
- * addon an absent export is not version drift, and callers use exactly that
- * absence as a capability probe, so it must stay `undefined`.
+ * `missingNativeExport` diagnoses stale addons and explicitly disabled syntax
+ * highlighting. Other missing exports on a current addon stay `undefined` so
+ * callers can continue to use absence as a capability probe.
  */
 import { describe, expect, it } from "bun:test";
 // Side-effect import: loads the real addon, so `nativeAddonStatus()` below
@@ -55,6 +55,15 @@ describe("native exports missing from a stale addon", () => {
 		const current = status({ version: "18.2.6", stale: false });
 		expect(missingNativeExport("macOSSpellCheckerAvailable", current)).toBeUndefined();
 		expect(missingNativeExportMessage("macOSSpellCheckerAvailable", current)).toContain(addonPath);
+	});
+
+	it.each([false, true])("rejects intentionally omitted highlighting (stale=%s)", stale => {
+		const desktop = status({ stale, capabilities: { syntaxHighlighting: false } });
+		for (const name of ["highlightCode", "warmHighlighter", "supportsLanguage", "getSupportedLanguages"]) {
+			const unavailable = missingNativeExport(name, desktop);
+			expect(() => unavailable?.()).toThrow(/syntaxHighlighting.*unavailable/);
+		}
+		expect(missingNativeExport("unrelatedExport", status({ ...desktop, stale: false }))).toBeUndefined();
 	});
 
 	it("reports the addon it actually loaded, not an assumed one", () => {

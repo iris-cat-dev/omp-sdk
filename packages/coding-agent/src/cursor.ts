@@ -629,6 +629,17 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		return toolResultMessage;
 	}
 
+	/** Run the filename search that legacy Cursor builds encode as empty-pattern `grepArgs`. */
+	async legacyGlob(args: Parameters<NonNullable<ICursorExecHandlers["legacyGlob"]>>[0]) {
+		const glob = args.glob;
+		if (!glob) throw new Error("Legacy Cursor Glob requires a non-empty glob pattern");
+		const toolCallId = decodeToolCallId(args.toolCallId);
+		return await executeTool(this.options, "glob", toolCallId, {
+			path: piJoinPath(args.path, glob),
+			limit: piLimit(args.headLimit),
+		});
+	}
+
 	async write(args: Parameters<NonNullable<ICursorExecHandlers["write"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
 		const content = args.fileText ?? new TextDecoder().decode(args.fileBytes ?? new Uint8Array());

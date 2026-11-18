@@ -38,13 +38,17 @@ function rejectSourceModule(filename: string): void {
 }
 
 /** Install synchronous Node hooks; real module evaluation stays in Node's loader. */
-function installNodeHooks(resolveHost: (specifier: string) => string | null): void {
+export function installNodeExtensionHooks(resolveHost: (specifier: string) => string | null): void {
 	if (installed) return;
 	const { registerHooks }: typeof NodeModule = hostRequire("node:module");
 	registerHooks({
 		resolve(specifier, context, nextResolve) {
 			const host = resolveHost(specifier);
 			if (host) {
+				// The manifest already resolved this host module. CJS resolution
+				// does not accept file URLs as specifiers; both loaders accept them
+				// as hook results and share the same untagged host identity.
+				if (host.startsWith("file:")) return { url: host, shortCircuit: true };
 				return nextResolve(host.startsWith("#") ? hostRequire.resolve(host) : host, {
 					...context,
 					parentURL: import.meta.url,
@@ -96,7 +100,7 @@ export async function loadNodeExtensionModule(
 	resolveHost: (specifier: string) => string | null,
 ): Promise<unknown> {
 	rejectSourceModule(filename);
-	installNodeHooks(resolveHost);
+	installNodeExtensionHooks(resolveHost);
 	const realPath = fs.realpathSync(filename);
 	rejectSourceModule(realPath);
 	owned.add(realPath);

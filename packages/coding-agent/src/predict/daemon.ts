@@ -17,6 +17,7 @@ import type { Database } from "@oh-my-pi/pi-utils/sqlite-driver";
 import { type PredictedWord, TextPredictor } from "@oh-my-pi/pi-natives";
 import { getHistoryDbPath, getPredictStateDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import { assertNativeCapability } from "../native-capabilities";
+import { assertLocalRuntimeAvailable } from "../sdk-profile";
 import { JsonLineServer } from "../subprocess/jsonl-server";
 import { openSqliteReadConnection } from "../tools/sqlite-reader";
 import { blendPredictions } from "./blend";
@@ -295,6 +296,7 @@ class TextPredictDaemon {
 	 * downloading) or while it cannot, ngram answers alone through the blend.
 	 */
 	async #blend(before: string, prefix: string): Promise<PredictedWord | null> {
+		assertLocalRuntimeAvailable("SmolLM word completion");
 		assertNativeCapability("smollm", "SmolLM word completion (choose ngram or apple instead)");
 		const [ngram, smollm] = await Promise.all([
 			this.#engine("ngram").then(engine => engine.predictor.complete(before, prefix)),
@@ -339,6 +341,7 @@ class TextPredictDaemon {
 		assertNativeCapability("localAssistance", "Word prediction");
 		let modelDir: string | undefined;
 		if (method === "smollm") {
+			assertLocalRuntimeAvailable("SmolLM word completion");
 			assertNativeCapability("smollm", "SmolLM word completion (choose ngram or apple instead)");
 			if (!(await smolLmWeightsReady())) throw new SmolLmWeightsMissingError();
 			modelDir = getSmolLmModelDir();

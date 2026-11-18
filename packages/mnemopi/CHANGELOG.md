@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Core Node SDK bundles retain remote and keyword memory without importing local fastembed initialization, installation, or model-worker implementations.
+
 ## [18.13.3] - 2026-10-28
 
 ### Changed

@@ -81,12 +81,20 @@ function keepRuntimeFile(name, relative, target, buildTarget) {
 		const [, abi, platform, arch] = relative.split("/");
 		return /^napi-v\d+$/u.test(abi) && platform === target.platform && arch === target.arch;
 	}
-	if (name === "koffi" && relative.startsWith("build/koffi/")) {
-		// index.js loads build/koffi/<platform>_<arch>, with musl as a Linux fallback.
-		const variant = relative.split("/")[2];
+	if (name === "koffi") {
+		// The published JS entries include their loader helpers; only the target
+		// prebuilt addon is needed at runtime, never cnoke or C/C++ build inputs.
+		if (!relative.startsWith("build/koffi/"))
+			return (
+				["package.json", "index.js", "indirect.js"].includes(relative) ||
+				/^(?:LICEN[CS]E|COPYING|NOTICE|THIRD-PARTY-NOTICES)(?:[.-]|$)/iu.test(path.basename(relative))
+			);
+		const [, , variant, filename] = relative.split("/");
 		return (
-			variant === `${target.platform}_${target.arch}` ||
-			(target.platform === "linux" && variant === `musl_${target.arch}`)
+			filename === "koffi.node" &&
+			(relative === `build/koffi/${variant}/koffi.node`) &&
+			(variant === `${target.platform}_${target.arch}` ||
+				(target.platform === "linux" && variant === `musl_${target.arch}`))
 		);
 	}
 	if (name === "@oh-my-pi/pi-natives") {
@@ -112,14 +120,18 @@ function installedRuntimePath(name, relative, buildTarget) {
 		: relative;
 }
 
-function requireBuildTarget(metadata, buildTarget, file) {
+function requireBuildTarget(metadata, buildTarget, profile, file) {
 	if ((metadata.buildTarget ?? "generic") !== buildTarget)
 		throw new Error(
 			`SDK build target mismatch in ${file}: expected ${buildTarget}, received ${metadata.buildTarget ?? "generic"}. Rebuild with gen:bundle:${buildTarget === "desktop" ? "desktop" : "node"} before staging.`,
 		);
+	if (metadata.profile !== profile)
+		throw new Error(
+			`SDK build profile mismatch in ${file}: expected ${profile}, received ${metadata.profile ?? "missing"}. Rebuild with gen:bundle:${buildTarget === "desktop" ? "desktop" : "node"} --profile=${profile} before staging.`,
+		);
 }
 
-async function validateSdk(source, buildTarget, dependencyInputs) {
+async function validateSdk(source, buildTarget, profile, dependencyInputs) {
 	if (!path.isAbsolute(source))
 		throw new Error("SDK source must be an absolute SDK package root, not dist/node or an SDK entry file.");
 	const directory = await realpath(source);
@@ -134,7 +146,7 @@ async function validateSdk(source, buildTarget, dependencyInputs) {
 			throw new Error(`SDK ${child} directory is empty in ${source}/${artifact}`);
 	}
 	const registry = await json(path.join(directory, artifact, "modules.json"));
-	requireBuildTarget(registry, buildTarget, path.join(directory, artifact, "modules.json"));
+	requireBuildTarget(registry, buildTarget, profile, path.join(directory, artifact, "modules.json"));
 	if (registry.version !== 1 || !registry.modules || Object.keys(registry.modules).length === 0)
 		throw new Error(`Incompatible Node SDK module registry in ${source}`);
 	for (const relative of Object.values(registry.modules)) {
@@ -150,7 +162,7 @@ async function validateSdk(source, buildTarget, dependencyInputs) {
 	});
 	if (runtime.version !== 1 || !runtime.packages?.[SDK_NAME])
 		throw new Error(`Incompatible SDK runtime dependency metadata in ${source}`);
-	requireBuildTarget(runtime, buildTarget, path.join(directory, artifact, "runtime-dependencies.json"));
+	requireBuildTarget(runtime, buildTarget, profile, path.join(directory, artifact, "runtime-dependencies.json"));
 	for (const [name, scope] of Object.entries(runtime.packages)) {
 		if (
 			!/^(@[^/]+\/)?[^/]+$/u.test(name) ||
@@ -245,10 +257,15 @@ async function desktopNativeAddons(pkg, target, buildMode) {
 			throw new Error(`Desktop native addon lacks current capability/version exports: ${file}. ${rebuild}`);
 		const capabilities = bindings.nativeCapabilities();
 		if (
-			["smollm", "liveVoice", "wasmGrammars", "pdf", "jujutsu", "snapcompact", "audio", "localAssistance"].some(
+			["smollm", "liveVoice", "wasmGrammars", "pdf", "jujutsu", "snapcompact", "audio", "localAssistance", "syntaxHighlighting"].some(
 				name => capabilities[name] !== false || metadata.capabilities?.[name] !== false,
 			) ||
 			[
+				"highlightCode",
+				"warmHighlighter",
+				"HighlightStream",
+				"supportsLanguage",
+				"getSupportedLanguages",
 				"LiveWebRtcPeer",
 				"AudioCapture",
 				"AudioPlayback",
@@ -302,7 +319,7 @@ export async function stageNodeSdk(
 		);
 	}
 	const dependencyInputs = [];
-	const sdk = await validateSdk(source, buildTarget, dependencyInputs);
+	const sdk = await validateSdk(source, buildTarget, profile, dependencyInputs);
 	if (
 		profile === "core" &&
 		(!sdk.runtime.optionalCapabilities || Object.keys(sdk.runtime.optionalCapabilities).length === 0)
@@ -451,6 +468,12 @@ export async function stageNodeSdk(
 			manifest.bundledDependencies = bundled;
 			delete manifest.bundleDependencies;
 			delete manifest.devDependencies;
+			if (manifest.name === "koffi") {
+				delete manifest.scripts;
+				delete manifest.types;
+				delete manifest.typings;
+				delete manifest.cnoke;
+			}
 			if (runtimeScope) {
 				// Every shipped path is described by build metadata; npm's source-package
 				// files globs must not reintroduce missing source or standalone CLI paths.

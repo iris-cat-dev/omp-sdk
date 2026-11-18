@@ -10,6 +10,7 @@ import { createNodeSourceMetadataPlugin } from "../../utils/scripts/node-source-
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createJsonParsePlugin } from "./json-parse-plugin";
 import { collectBundledPiEntries, type BundledPiEntry } from "./legacy-pi-virtual-module";
+import type { NodeSdkProfile } from "../src/sdk-profile";
 
 const packageDir = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(packageDir, "..", "..");
@@ -44,6 +45,17 @@ const optionalCapabilities = {
 	"offline-speech": ["sherpa-onnx-node"],
 } satisfies Record<string, string[]>;
 
+const localClientEntries: Readonly<Record<string, string>> = {
+	"#coding-agent-tiny-client": "tiny/_title-client",
+	"#coding-agent-stt-client": "stt/_asr-client",
+	"#coding-agent-tts-client": "tts/_tts-client",
+	"#coding-agent-mnemopi-embed-client": "mnemopi/_embed-client",
+	"#coding-agent-stt-downloader": "stt/_downloader",
+	"#coding-agent-smollm-weights": "predict/_smollm-weights",
+};
+
+const offlineWorkerDispatchEntry = "cli/_offline-worker-dispatch";
+
 const runtimeModules: Record<string, string> = {
 	runtime: "@oh-my-pi/pi-utils/runtime",
 	"runtime-process": "@oh-my-pi/pi-utils/runtime-process",
@@ -57,7 +69,7 @@ const runtimeSourceTargets: Readonly<Record<string, string>> = Object.fromEntrie
 	Object.entries(runtimeModules).map(([name, specifier]) => [path.join(utilsSourceDir, name), specifier]),
 );
 
-function createNodeRuntimeExternalPlugin(): BunPlugin {
+function createNodeRuntimeExternalPlugin(profile: NodeSdkProfile): BunPlugin {
 	return {
 		name: "omp-node-runtime-externals",
 		target: "node",
@@ -78,11 +90,38 @@ function createNodeRuntimeExternalPlugin(): BunPlugin {
 			build.onResolve({ filter: /^@oh-my-pi\/pi-coding-agent(?:\/(?:sdk|headless))?$/ }, () => ({
 				path: path.join(packageDir, "src", "headless.ts"),
 			}));
-			build.onResolve({ filter: /^#coding-agent-(?:headless|host-api)$/ }, args => ({
+			build.onResolve({ filter: /^#coding-agent-(?:headless|host-api|legacy-pi-compat)$/ }, args => ({
 				path: path.join(
 					packageDir,
 					"src",
-					args.path === "#coding-agent-headless" ? "headless.ts" : "extensibility/host-api.node.ts",
+					args.path === "#coding-agent-headless"
+						? "headless.ts"
+						: args.path === "#coding-agent-host-api"
+							? "extensibility/host-api.node.ts"
+							: "extensibility/plugins/legacy-pi-compat.node.ts",
+				),
+			}));
+			build.onResolve(
+				{ filter: /^#coding-agent-(?:(?:tiny|stt|tts|mnemopi-embed)-client|stt-downloader|smollm-weights)$/ },
+				args => ({
+					path: path.join(
+						packageDir,
+						"src",
+						`${localClientEntries[args.path]}${profile === "core" ? ".core" : ""}.ts`,
+					),
+				}),
+			);
+			build.onResolve({ filter: /^#coding-agent-offline-worker-dispatch$/ }, () => ({
+				path: path.join(packageDir, "src", `${offlineWorkerDispatchEntry}${profile === "core" ? ".core" : ""}.ts`),
+			}));
+			build.onResolve({ filter: /^#mnemopi-local-embedding-runtime$/ }, () => ({
+				path: path.join(
+					repoRoot,
+					"packages",
+					"mnemopi",
+					"src",
+					"core",
+					`_local-embedding-runtime${profile === "core" ? ".core" : ""}.ts`,
 				),
 			}));
 			// The UMD build passes require through a factory, preventing static bundling.
@@ -112,6 +151,7 @@ function exposeToNode(entry: BundledPiEntry): boolean {
 	const subpath = entry.key.slice(codingAgentPrefix.length + 1);
 	// The command entry owns bootstrap, not an extension host facade.
 	if (subpath === "sdk/plugins") return false;
+	if (subpath === "extensibility/plugins/legacy-pi-compat.bun") return false;
 	return !/^(?:cli|main|modes)(?:\/|$)/.test(subpath) && !subpath.startsWith("node-");
 }
 
@@ -119,6 +159,15 @@ function exposeToDesktop(entry: BundledPiEntry): boolean {
 	// Retain package roots and the Desktop extension surface, not every source
 	// file mirrored by wildcard exports. Their transitive graphs remain intact.
 	return /^(?:@[^/]+\/)?[^/]+$/.test(entry.key) || desktopModuleAliases.has(entry.key);
+}
+
+/** Internal offline implementations are not independent core extension entries. */
+function exposeToCore(entry: BundledPiEntry): boolean {
+	if (!entry.key.startsWith(codingAgentPrefix + "/")) return true;
+	const subpath = entry.key.slice(codingAgentPrefix.length + 1);
+	return !/^(?:tiny\/(?:_|mlx-runtime|worker(?:-server)?$)|stt\/(?:_|asr-worker|runtime|sherpa-runtime)|tts\/(?:_|tts-worker|downloader|runtime)|mnemopi\/(?:_|embed-worker|embed-server)|predict\/_)/.test(
+		subpath,
+	);
 }
 
 function moduleEntryPath(key: string): string {
@@ -167,6 +216,7 @@ async function writeRuntimeDependencies(
 	outDir: string,
 	result: Bun.BuildOutput,
 	buildTarget: NodeSdkBuildTarget,
+	profile: NodeSdkProfile,
 	virtualRoot: string,
 ): Promise<void> {
 	if (!result.metafile) throw new Error("Node SDK build did not emit dependency metadata");
@@ -273,9 +323,13 @@ async function writeRuntimeDependencies(
 		outDir,
 		[
 			"koffi", // utils/ptree.ts resolves the detached Node process guardian
-			"@huggingface/transformers", // src/subprocess/worker-runtime.ts
-			"fastembed", // pi-mnemopi's embedding runtime loader
-			"sherpa-onnx-node", // src/stt/sherpa-runtime.ts
+			...(profile === "full"
+				? [
+						optionalCapabilities["local-models"][0],
+						...optionalCapabilities["local-embeddings"],
+						...optionalCapabilities["offline-speech"],
+					]
+				: []),
 		],
 		artifactDirectory,
 	);
@@ -283,17 +337,23 @@ async function writeRuntimeDependencies(
 		path.join(repoRoot, "packages", "utils", "dist", "node"),
 		["sharp", "ws"], // runtime-image.ts and runtime-process.ts createRequire
 	);
+	const emittedExternals = new Set(packages[codingAgentPrefix].dependencies);
 	for (const [file, input] of Object.entries(result.metafile.inputs)) {
 		for (const imported of input.imports) {
 			if (!imported.external) continue;
 			const name = toPackage(imported.path);
-			if (!name) continue;
-			packages[codingAgentPrefix].dependencies.push(name);
+			if (!name || !emittedExternals.has(name)) continue;
 			const owner = await sourceOwner(file);
 			const optional =
 				owner?.optionalDependencies?.[name] !== undefined ||
 				(owner?.dependencies?.[name] === undefined && owner?.peerDependenciesMeta?.[name]?.optional === true);
 			(optional ? optionalExternals : requiredExternals).add(name);
+		}
+	}
+	if (profile === "core") {
+		for (const dependency of Object.values(optionalCapabilities).flat()) {
+			if (emittedExternals.has(dependency))
+				throw new Error(`Core Node SDK emitted an offline dependency: ${dependency}`);
 		}
 	}
 	for (const directory of await sourcePackageDirs()) {
@@ -304,6 +364,7 @@ async function writeRuntimeDependencies(
 		for (const file of await walk(directory, "src")) {
 			// Bundled code/assets need no second source copy. Preserve unbundled
 			// resource files (e.g. browser preludes) at source-metadata locations.
+			if (profile === "core" && directory === packageDir && file === "src/tiny/mlx-server.py") continue;
 			if (/\.(?:[cm]?tsx?|map)$/.test(file) || inputs.has(path.join(directory, file))) continue;
 			if (file.split("/").some(part => /^(?:test|tests|__tests__|docs|examples)$/.test(part))) continue;
 			scope.files.push(file);
@@ -330,7 +391,7 @@ async function writeRuntimeDependencies(
 	}
 	await Bun.write(
 		path.join(outDir, "runtime-dependencies.json"),
-		JSON.stringify({ version: 1, buildTarget, packages, optionalCapabilities }, null, 2),
+		JSON.stringify({ version: 1, buildTarget, profile, packages, optionalCapabilities }, null, 2),
 	);
 	// Build-only dependency watches stay outside the shipped SDK directory.
 	const buildInputs = [
@@ -352,12 +413,16 @@ async function writeRuntimeDependencies(
 	);
 	await Bun.write(
 		path.join(repoRoot, "target", "node-sdk-build-inputs", `${buildTarget}.json`),
-		JSON.stringify({ version: 1, buildTarget, files: existingInputs.filter(file => file !== undefined) }),
+		JSON.stringify({ version: 1, buildTarget, profile, files: existingInputs.filter(file => file !== undefined) }),
 	);
 }
 
 /** Build a Node SDK plus one shared worker host; Bun is needed only by the build toolchain. */
-export async function bundleNodeSdk(outDir?: string, buildTarget: NodeSdkBuildTarget = "generic"): Promise<void> {
+export async function bundleNodeSdk(
+	outDir?: string,
+	buildTarget: NodeSdkBuildTarget = "generic",
+	profile: NodeSdkProfile = buildTarget === "desktop" ? "core" : "full",
+): Promise<void> {
 	outDir ??= path.join(packageDir, sdkArtifactDirectories[buildTarget]);
 	await bundleNodeRuntime();
 	await fs.rm(outDir, { recursive: true, force: true });
@@ -388,7 +453,12 @@ export async function bundleNodeSdk(outDir?: string, buildTarget: NodeSdkBuildTa
 			});
 		}
 		const registry = entries
-			.filter(entry => exposeToNode(entry) && (buildTarget !== "desktop" || exposeToDesktop(entry)))
+			.filter(
+				entry =>
+					exposeToNode(entry) &&
+					(buildTarget !== "desktop" || exposeToDesktop(entry)) &&
+					(profile !== "core" || exposeToCore(entry)),
+			)
 			.sort((a, b) => a.key.localeCompare(b.key));
 		for (const entry of registry) {
 			const relative = moduleEntryPath(entry.key);
@@ -432,12 +502,13 @@ export async function bundleNodeSdk(outDir?: string, buildTarget: NodeSdkBuildTa
 				"bun:jsc",
 			],
 			plugins: [
-				createNodeRuntimeExternalPlugin(),
+				createNodeRuntimeExternalPlugin(profile),
 				await createNodeSourceMetadataPlugin(await sourcePackageDirs()),
 				createJsonParsePlugin(undefined, "node"),
 			],
 			define: {
 				"process.env.PI_NODE_SDK": JSON.stringify("true"),
+				__OMP_CORE_SDK__: JSON.stringify(profile === "core"),
 				"process.env.PI_DOCS_EMBED": JSON.stringify(docs.payload),
 			},
 			minify: { whitespace: true, syntax: true, identifiers: true, keepNames: true },
@@ -451,14 +522,20 @@ export async function bundleNodeSdk(outDir?: string, buildTarget: NodeSdkBuildTa
 			);
 			throw new Error(`Node SDK bundle failed:\n${errors.join("\n")}`);
 		}
-		await Bun.write(path.join(outDir, "modules.json"), JSON.stringify({ version: 1, buildTarget, modules }));
-		await writeRuntimeDependencies(outDir, result, buildTarget, virtualRoot);
+		await Bun.write(path.join(outDir, "modules.json"), JSON.stringify({ version: 1, buildTarget, profile, modules }));
+		await writeRuntimeDependencies(outDir, result, buildTarget, profile, virtualRoot);
 		process.stdout.write(
-			`Bundled ${buildTarget} Node SDK and shared worker host to ${outDir} (${registry.length} host modules)\n`,
+			`Bundled ${buildTarget}/${profile} Node SDK and shared worker host to ${outDir} (${registry.length} host modules)\n`,
 		);
 	} finally {
 		await fs.rm(virtualRoot, { recursive: true, force: true });
 	}
 }
 
-if (import.meta.main) await bundleNodeSdk(undefined, process.argv.includes("--desktop") ? "desktop" : "generic");
+if (import.meta.main) {
+	const profileArg = process.argv.find(arg => arg.startsWith("--profile="))?.slice("--profile=".length);
+	if (profileArg !== undefined && profileArg !== "core" && profileArg !== "full") {
+		throw new Error("Node SDK --profile must be core or full");
+	}
+	await bundleNodeSdk(undefined, process.argv.includes("--desktop") ? "desktop" : "generic", profileArg);
+}

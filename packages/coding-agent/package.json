@@ -61,7 +61,19 @@
 			"bun": "./src/extensibility/host-api.ts",
 			"node": "./src/extensibility/host-api.node.ts",
 			"default": "./src/extensibility/host-api.ts"
-		}
+		},
+		"#coding-agent-legacy-pi-compat": {
+			"bun": "./src/extensibility/plugins/legacy-pi-compat.bun.ts",
+			"node": "./src/extensibility/plugins/legacy-pi-compat.node.ts",
+			"default": "./src/extensibility/plugins/legacy-pi-compat.bun.ts"
+		},
+		"#coding-agent-tiny-client": "./src/tiny/_title-client.ts",
+		"#coding-agent-stt-client": "./src/stt/_asr-client.ts",
+		"#coding-agent-tts-client": "./src/tts/_tts-client.ts",
+		"#coding-agent-mnemopi-embed-client": "./src/mnemopi/_embed-client.ts",
+		"#coding-agent-offline-worker-dispatch": "./src/cli/_offline-worker-dispatch.ts",
+		"#coding-agent-stt-downloader": "./src/stt/_downloader.ts",
+		"#coding-agent-smollm-weights": "./src/predict/_smollm-weights.ts"
 	},
 	"exports": {
 		"./package.json": "./package.json",

@@ -4,7 +4,6 @@ import {
 	buildCursorHistoryForTest,
 	buildCursorRequestContextRules,
 	buildCursorSystemPromptJsons,
-	emptyGrepPatternRejection,
 	handleServerMessage,
 	processInteractionUpdate,
 	resolveExecHandler,
@@ -1341,36 +1340,6 @@ describe("Cursor history encoding", () => {
 				}),
 			],
 		]);
-	});
-});
-
-describe("Cursor grepArgs empty-pattern guard (issue #4574)", () => {
-	it("returns null when the pattern is a non-empty regex", () => {
-		expect(emptyGrepPatternRejection("foo", undefined)).toBeNull();
-		expect(emptyGrepPatternRejection("foo", "**/*.ts")).toBeNull();
-		// Whitespace-only patterns count as valid: leading/trailing whitespace is
-		// meaningful in regexes (indentation anchors), matching the coding-agent
-		// grep tool's own contract at packages/coding-agent/src/tools/grep.ts.
-		expect(emptyGrepPatternRejection(" \tfoo ", undefined)).toBeNull();
-	});
-
-	it("rejects an empty pattern with a glob-aware hint when only a glob is present", () => {
-		const message = emptyGrepPatternRejection("", "**/*snapcompact*");
-		expect(message).toContain("grep pattern is required");
-		expect(message).toContain('"**/*snapcompact*"');
-		expect(message).toContain("ls/read tool");
-	});
-
-	it("rejects an empty pattern with a plain message when no glob is present", () => {
-		expect(emptyGrepPatternRejection("", undefined)).toBe("grep pattern is required (received an empty pattern).");
-		expect(emptyGrepPatternRejection(undefined, undefined)).toBe(
-			"grep pattern is required (received an empty pattern).",
-		);
-	});
-
-	it("rejects a whitespace-only pattern the same way as an empty one", () => {
-		expect(emptyGrepPatternRejection("   ", undefined)).toBe("grep pattern is required (received an empty pattern).");
-		expect(emptyGrepPatternRejection("\t\n", "src/**/*.ts")).toContain('"src/**/*.ts"');
 	});
 });
 

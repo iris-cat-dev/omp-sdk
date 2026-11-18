@@ -22,8 +22,9 @@ assert.equal(manifest.version, process.env.OMP_SDK_SMOKE_VERSION);
 const native = sdkRequire("@oh-my-pi/pi-natives");
 assert.equal(native.__piNativesBuildVersion(), manifest.version);
 const capabilities = sdk.readNativeCapabilities();
-for (const name of ["smollm", "liveVoice", "wasmGrammars", "pdf", "jujutsu", "snapcompact", "audio", "localAssistance"])
+for (const name of ["smollm", "liveVoice", "wasmGrammars", "pdf", "jujutsu", "snapcompact", "audio", "localAssistance", "syntaxHighlighting"])
   assert.equal(capabilities[name], false, name);
+assert.throws(() => native.highlightCode("const value = 1;", "javascript", {}), /syntaxHighlighting|unavailable/);
 
 const cwd = path.join(process.cwd(), "work");
 await mkdir(cwd);
@@ -60,7 +61,11 @@ const { Image } = await import(pathToFileURL(path.join(utilsRoot, "dist/node/run
 const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>');
 const png = await new Image(svg).resize(2, 3).png().bytes();
 assert.deepEqual(await new Image(png).metadata(), { width: 2, height: 3, format: "png" });
-assert.ok(sdkRequire("koffi").version);
+const ffi = sdkRequire("koffi");
+const system = ffi.load(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6");
+try {
+  assert.equal(system.func("int getpid(void)")(), process.pid);
+} finally { system.unload(); }
 
 const registry = JSON.parse(await readFile(path.join(sdkRoot, "dist/node/modules.json"), "utf8"));
 const alias = registry.modules["@oh-my-pi/pi-coding-agent/sdk"];

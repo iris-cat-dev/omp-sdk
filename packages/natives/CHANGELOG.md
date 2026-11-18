@@ -22,7 +22,7 @@
 
 ### Removed
 
-- Removed PDF extraction, Jujutsu, Snapcompact fonts/rendering, audio capture/playback, local prediction, spelling, and Apple Foundation Models from the Desktop addon.
+- Removed PDF extraction, Jujutsu, Snapcompact fonts/rendering, audio capture/playback, local prediction, spelling, Apple Foundation Models, and syntect TUI syntax highlighting from the Desktop addon.
 
 ## [18.14.0] - 2026-10-29
 

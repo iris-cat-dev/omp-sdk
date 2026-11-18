@@ -2,6 +2,7 @@ import {
 	type HighlightColors as NativeHighlightColors,
 	HighlightStream as NativeHighlightStream,
 	highlightCode as nativeHighlightCode,
+	nativeCapabilities,
 	supportsLanguage as nativeSupportsLanguage,
 	warmHighlighter as nativeWarmHighlighter,
 } from "@oh-my-pi/pi-natives";
@@ -23,6 +24,16 @@ import type { Theme } from "./theme-class";
 
 let cachedHighlightColorsFor: Theme | undefined;
 let cachedHighlightColors: NativeHighlightColors | undefined;
+let syntaxHighlightingAvailable: boolean | undefined;
+
+function requireSyntaxHighlighting(): void {
+	syntaxHighlightingAvailable ??= nativeCapabilities().syntaxHighlighting;
+	if (syntaxHighlightingAvailable === false) {
+		throw new Error(
+			"TUI syntaxHighlighting is unavailable in this native build. Use the full generic SDK/CLI build for TUI syntax highlighting; the Desktop addon intentionally omits it.",
+		);
+	}
+}
 
 function getHighlightColors(t: Theme): NativeHighlightColors {
 	if (cachedHighlightColorsFor !== t || !cachedHighlightColors) {
@@ -101,6 +112,7 @@ function highlightCached(code: string, validLang: string | undefined, highlightT
  * Returns array of highlighted lines.
  */
 export function highlightCode(code: string, lang?: string, highlightTheme: Theme = theme): string[] {
+	requireSyntaxHighlighting();
 	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 	const highlighted = highlightCached(code, validLang, highlightTheme);
 	// Always return a fresh array: callers (e.g. renderCodeCell) push extra lines
@@ -110,6 +122,7 @@ export function highlightCode(code: string, lang?: string, highlightTheme: Theme
 
 /** Create a stateful highlighter for progressive terminal rendering. */
 export function createHighlightStream(lang?: string, highlightTheme: Theme = theme): NativeHighlightStream | null {
+	requireSyntaxHighlighting();
 	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 	if (!validLang) return null;
 	// Workspace loads skip the natives version sentinel, so a stale local
@@ -127,6 +140,7 @@ let highlighterWarmup: Promise<void> | undefined;
 
 /** Warm native syntax grammars off-thread once per process. */
 export function warmHighlighter(): Promise<void> {
+	requireSyntaxHighlighting();
 	if (!highlighterWarmup) {
 		highlighterWarmup =
 			typeof nativeWarmHighlighter === "function"
@@ -305,6 +319,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 					})
 			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
+			requireSyntaxHighlighting();
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang, theme);
 			if (highlighted !== null) return highlighted.split("\n");

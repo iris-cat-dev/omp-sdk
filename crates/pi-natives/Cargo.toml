@@ -16,7 +16,7 @@ workspace = true
 
 [features]
 # Keep the full addon as the default; Desktop builds explicitly disable defaults.
-default = ["smollm", "live-voice", "wasm-grammars", "pdf", "snapcompact", "audio", "local-assistance", "vcs-jj"]
+default = ["smollm", "live-voice", "wasm-grammars", "pdf", "snapcompact", "audio", "local-assistance", "vcs-jj", "syntax-highlighting"]
 smollm = ["local-assistance", "pi-predict/smollm"]
 live-voice = ["audio", "pi-voice/live"]
 wasm-grammars = ["pi-ast/wasm"]
@@ -25,6 +25,7 @@ snapcompact = ["dep:base64", "dep:fontdue", "dep:png"]
 audio = ["dep:pi-voice"]
 local-assistance = ["dep:pi-predict"]
 vcs-jj = ["pi-vcs/jj"]
+syntax-highlighting = ["dep:syntect"]
 # PipeWire hard-links a host library unavailable on shipping cross triples.
 wayland-pipewire = ["dep:pipewire"]
 
@@ -81,7 +82,7 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smallvec.workspace = true
-syntect.workspace = true
+syntect = { workspace = true, optional = true }
 tokio.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
@@ -134,7 +135,7 @@ xkeysym = "=0.2.1"
 [build-dependencies]
 napi-build.workspace = true
 shlex.workspace = true
-syntect.workspace = true
+syntect = { workspace = true, optional = true }
 # Match runtime features for dependencies shared with build scripts and proc macros.
 bitflags = { version = "2", features = ["std"] }
 crc32fast = "1"

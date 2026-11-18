@@ -638,7 +638,24 @@ function isCompatiblePreSentinelNativeAddon(bindings, diskHasExpectedStamp) {
 	);
 }
 
+const SYNTAX_HIGHLIGHTING_EXPORTS = new Set([
+	"highlightCode",
+	"warmHighlighter",
+	"HighlightStream",
+	"supportsLanguage",
+	"getSupportedLanguages",
+]);
+
 export function validateLoadedBindings(ctx, bindings, candidate) {
+	const capabilities = typeof bindings.nativeCapabilities === "function" ? bindings.nativeCapabilities() : undefined;
+	if (typeof capabilities?.syntaxHighlighting === "boolean") {
+		for (const name of SYNTAX_HIGHLIGHTING_EXPORTS) {
+			const present = typeof bindings[name] === "function";
+			if (present !== capabilities.syntaxHighlighting) {
+				throw new Error(`Loaded ${candidate} with an incompatible syntaxHighlighting capability/export contract: ${name}. Rebuild the native addon.`);
+			}
+		}
+	}
 	// In workspace dev (running out of `packages/natives/native/` rather than a
 	// `node_modules` install or a compiled bundle) the local `.node` only gains
 	// the new release stamp after `bun --cwd=packages/natives run build`. Skip
@@ -690,7 +707,7 @@ export function validateLoadedBindings(ctx, bindings, candidate) {
 /**
  * Identity of the addon `loadNative()` returned, in the shape the
  * missing-export diagnostic reports. Null until a load succeeds.
- * @type {{ path: string; version: string | null; packageVersion: string; stale: boolean } | null}
+ * @type {{ path: string; version: string | null; packageVersion: string; stale: boolean; capabilities?: { syntaxHighlighting?: boolean } } | null}
  */
 let loadedAddon = null;
 
@@ -708,12 +725,13 @@ function describeLoadedAddon(bindings, candidate, ctx) {
 		version,
 		packageVersion: ctx.packageVersion,
 		stale: version !== ctx.packageVersion,
+		capabilities: typeof bindings.nativeCapabilities === "function" ? bindings.nativeCapabilities() : undefined,
 	};
 }
 
 /**
  * The addon behind this process's `@oh-my-pi/pi-natives` exports.
- * @returns {{ path: string; version: string | null; packageVersion: string; stale: boolean } | null}
+ * @returns {{ path: string; version: string | null; packageVersion: string; stale: boolean; capabilities?: { syntaxHighlighting?: boolean } } | null}
  */
 export function nativeAddonStatus() {
 	return loadedAddon;
@@ -730,16 +748,19 @@ export function nativeAddonStatus() {
  * function` — every `write` call in a tree that pulled the read-projection
  * guard, for one — with nothing naming the stale addon.
  *
- * Only a stale addon gets the stub. On a current addon an absent export is not
- * version drift but a symbol this build does not implement, and callers probe
- * for exactly that (`typeof native.x === "function"`); they must keep seeing
- * `undefined`.
+ * A known disabled syntax-highlighting capability gets an explicit unsupported
+ * error, including on a stale workspace addon. Other missing exports keep the
+ * existing contract: a stale addon gets a diagnostic stub and a current addon
+ * stays `undefined` for capability probes.
  * @param {string} symbolName
  * @param {ReturnType<typeof nativeAddonStatus>} [addon]
  * @returns {((...args: unknown[]) => never) | undefined}
  */
 export function missingNativeExport(symbolName, addon = loadedAddon) {
-	if (!addon?.stale) return undefined;
+	if (
+		!addon?.stale &&
+		!(addon?.capabilities?.syntaxHighlighting === false && SYNTAX_HIGHLIGHTING_EXPORTS.has(symbolName))
+	) return undefined;
 	return () => {
 		throw new Error(missingNativeExportMessage(symbolName, addon));
 	};
@@ -753,6 +774,9 @@ export function missingNativeExport(symbolName, addon = loadedAddon) {
  * @returns {string}
  */
 export function missingNativeExportMessage(symbolName, addon = loadedAddon) {
+	if (addon?.capabilities?.syntaxHighlighting === false && SYNTAX_HIGHLIGHTING_EXPORTS.has(symbolName)) {
+		return `Native syntaxHighlighting is unavailable in this native build (\`${symbolName}\`). Use the full generic SDK/CLI build for TUI syntax highlighting; the Desktop addon intentionally omits it.`;
+	}
 	const rebuild = "rebuild it with `bun run build:native`";
 	if (!addon) return `@oh-my-pi/pi-natives does not export \`${symbolName}\`; ${rebuild}.`;
 	if (!addon.stale) {

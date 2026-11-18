@@ -1537,6 +1537,11 @@ export interface CursorExecHandlers {
 	read?: (args: ReadArgs) => Promise<CursorExecHandlerResult<ReadResult>>;
 	ls?: (args: LsArgs) => Promise<CursorExecHandlerResult<LsResult>>;
 	grep?: (args: GrepArgs) => Promise<CursorExecHandlerResult<GrepResult>>;
+	/**
+	 * Cursor's legacy Glob call is encoded as `grepArgs` with an empty pattern
+	 * and a non-empty glob. It still returns a `GrepResult` on the wire.
+	 */
+	legacyGlob?: (args: GrepArgs) => Promise<CursorExecHandlerResult<GrepResult>>;
 	write?: (args: WriteArgs) => Promise<CursorExecHandlerResult<WriteResult>>;
 	delete?: (args: DeleteArgs) => Promise<CursorExecHandlerResult<DeleteResult>>;
 	shell?: (args: ShellArgs) => Promise<CursorExecHandlerResult<ShellResult>>;
