@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Cursor streams can hand a settled tool batch back to the host for compaction without retrying the oversized checkpoint.
 - Fixed Cursor turns receiving hook-added context as the user's request and losing the turn's server records on continuation ([#19156](https://github.com/can1357/oh-my-pi/pull/19156) by [@anzhen-tech](https://github.com/anzhen-tech)).
 - Fixed legacy Cursor Glob calls being executed as content grep for `.`; filename searches now use the local glob tool, so empty and binary files are listed without reading every matching file.
 - Fixed Cursor turns failing when a TLS-intercepting CONNECT proxy resets the HTTP/2 handshake; successful HTTP/1 fallback is retained for subsequent turns to the same endpoint ([#17985](https://github.com/can1357/oh-my-pi/pull/17985) by [@breakwaterlabs](https://github.com/breakwaterlabs)).

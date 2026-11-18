@@ -174,6 +174,7 @@ export interface SteeringQueueState {
  */
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model;
+	resolveCursorCompactionThreshold?: (model: Model) => number | undefined;
 
 	/** Reports whether this loop has reached a safe process-pause boundary. */
 	onPauseChange?: (paused: boolean) => void;

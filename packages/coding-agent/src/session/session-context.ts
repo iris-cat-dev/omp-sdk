@@ -765,6 +765,18 @@ export function buildSessionContext(
 			if (message.stopReason !== "aborted" && message.stopReason !== "error") continue;
 			const next = messages[i + 1];
 			if (next?.role === "custom" && next.customType === INTERRUPTED_THINKING_MESSAGE_TYPE) continue;
+			// Cursor can lose its terminal stream frame after executing tools in
+			// band. The dangling-call pass above has already removed calls with
+			// no result on this branch. Keep the paired batch, including across
+			// compaction; otherwise the resumed model sees work it already did
+			// as still pending.
+			if (
+				message.api === "cursor-agent" &&
+				message.stopReason === "error" &&
+				message.content.some(block => block.type === "toolCall")
+			) {
+				continue;
+			}
 			// A failed turn that emitted tool calls persists paired synthetic
 			// tool_result placeholders after it. Dropping only the assistant would
 			// strand those results with no preceding tool_use — a shape providers

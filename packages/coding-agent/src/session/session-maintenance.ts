@@ -386,6 +386,7 @@ export interface SessionMaintenanceHost {
 	model(): Model | undefined;
 	thinkingLevel(): ThinkingLevel | undefined;
 	isDisposed(): boolean;
+	abortInProgress(): boolean;
 	isStreaming(): boolean;
 	isGeneratingHandoff(): boolean;
 	promptGeneration(): number;
@@ -561,6 +562,21 @@ export class SessionMaintenance {
 	/** Compaction policy in force for the active model (its `compaction.modelThresholds` entry applied). */
 	get #compactionSettings(): CompactionSettings {
 		return resolveModelCompactionSettings(this.#host.settings, this.#model);
+	}
+
+	/** The policy for a live Cursor request; summary and external-tool streams do not use this. */
+	cursorCompactionThreshold(model: Model): number | undefined {
+		const contextWindow = model.contextWindow ?? 0;
+		const settings = resolveModelCompactionSettings(this.#host.settings, model);
+		if (
+			contextWindow <= 0 ||
+			!settings.enabled ||
+			settings.midTurnEnabled === false ||
+			(!this.#usesExperimentalContextManagement() && !hasUsableCompactionMethod("threshold", model, settings))
+		) {
+			return undefined;
+		}
+		return resolveThresholdTokens(contextWindow, settings);
 	}
 
 	get #tokenizer() {
@@ -1973,9 +1989,7 @@ export class SessionMaintenance {
 				...result,
 				preserveData: snapcompact.stripPreservedArchive(result.preserveData),
 			};
-			const safeToContinue = willRetry
-				? this.#compactionCreatedRetryFit()
-				: reason === "idle" || this.#compactionCreatedHeadroom();
+			const safeToContinue = this.#compactionCanResume(reason, willRetry);
 			await this.#emitLifecycleEvent(
 				{
 					type: "auto_compaction_end",
@@ -2978,6 +2992,57 @@ export class SessionMaintenance {
 			messagesAfter: activeMessages.length,
 		});
 	}
+
+	/** Recover a Cursor tool loop without discarding its already-executed turn. */
+	async compactCursorToolTurn(
+		message: AssistantMessage,
+		reason: "threshold" | "overflow",
+	): Promise<CompactionCheckResult> {
+		const latest = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		if (
+			this.#host.isDisposed() ||
+			this.#host.abortInProgress() ||
+			this.isCompacting ||
+			(latest !== null && message.timestamp < new Date(latest.timestamp).getTime())
+		) {
+			return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
+		}
+		const generation = this.#host.promptGeneration();
+		const promoted = await this.#tryContextPromotion(message);
+		if (this.#host.promptGeneration() !== generation || this.#host.abortInProgress() || this.#host.isDisposed()) {
+			return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
+		}
+		if (promoted && this.#compactionCanResume(reason, true)) {
+			this.#host.scheduleAgentContinue({
+				source: "context-promotion-overflow",
+				delayMs: 100,
+				generation,
+			});
+			return COMPACTION_CHECK_CONTINUATION;
+		}
+
+		const result = await this.runAutoCompaction(reason, true, {
+			triggerContextTokens: calculateContextTokens(message.usage),
+			phase: "mid_turn",
+			suppressContinuation: true,
+		});
+		if (result.continuationScheduled || result.automaticContinuationBlocked) return result;
+		if (this.#host.promptGeneration() !== generation || this.#host.abortInProgress() || this.#host.isDisposed()) {
+			return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
+		}
+		// A frame rescue can rewrite history without scheduling a continuation.
+		if (result.historyRewritten && this.#compactionCanResume(reason, true)) {
+			this.#host.scheduleAgentContinue({ source: "compaction-retry", delayMs: 100, generation });
+			return COMPACTION_CHECK_CONTINUATION;
+		}
+		this.#host.emitNotice(
+			"warning",
+			"Cursor could not free enough context to resume. Completed tools were kept; compact the session or switch to a larger context window before continuing.",
+			"compaction",
+		);
+		return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
+	}
+
 	/**
 	 * Check if context maintenance or promotion is needed and run it.
 	 * Called after agent_end and before prompt submission.
@@ -4392,6 +4457,13 @@ export class SessionMaintenance {
 	 */
 	#compactionCreatedRetryFit(): boolean {
 		return this.#model ? this.contextFitsModel(this.#model) : true;
+	}
+
+	#compactionCanResume(reason: "idle" | "threshold" | "overflow" | "incomplete", willRetry: boolean): boolean {
+		if (reason === "idle") return true;
+		return willRetry && reason !== "threshold"
+			? this.#compactionCreatedRetryFit()
+			: this.#compactionCreatedHeadroom();
 	}
 
 	/**
@@ -6068,16 +6140,14 @@ export class SessionMaintenance {
 				}
 			}
 
-			// Retry only needs the rebuilt prompt to fit the window again — measured
-			// AFTER the drop above so the just-failed turn (which the retry prompt
-			// won't include) is excluded. Reusing the auto-continue recovery band
-			// here turned recoverable overflows into manual dead-ends (#3412 review),
-			// so use the looser fit budget.
-			retryFits = this.#compactionCreatedRetryFit();
+			// Overflow and output-limit retries only need to fit. A deliberate
+			// threshold yield needs headroom or the next batch will yield again.
+			const hasProgress = () => this.#compactionCanResume(reason, true);
+			retryFits = hasProgress();
 			if (!retryFits) {
 				retryFits = await this.#rescueCompactionDeadEnd(autoCompactionSignal, {
 					skipElide: args.fallbackFromShake,
-					hasProgress: () => this.#compactionCreatedRetryFit(),
+					hasProgress,
 				});
 			}
 			if (!retryFits) {

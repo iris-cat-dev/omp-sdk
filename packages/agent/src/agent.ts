@@ -471,6 +471,7 @@ export class Agent {
 	#cursorExecHandlers?: CursorExecHandlers;
 	#getCursorTools?: () => AgentTool[];
 	#cursorOnToolResult?: CursorToolResultHandler;
+	#cursorCompactionThreshold?: (model: Model) => number | undefined;
 	#cwd?: string;
 	#cwdResolver?: () => string | undefined;
 
@@ -1183,6 +1184,10 @@ export class Agent {
 
 	setRawSseEventInterceptor(fn: SimpleStreamOptions["onSseEvent"] | undefined): void {
 		this.#onSseEvent = fn;
+	}
+
+	setCursorCompactionThreshold(resolve: ((model: Model) => number | undefined) | undefined): void {
+		this.#cursorCompactionThreshold = resolve;
 	}
 
 	setAssistantMessageEventInterceptor(
@@ -1994,6 +1999,7 @@ export class Agent {
 					: undefined,
 			cursorExecHandlers: this.#cursorExecHandlers,
 			cursorOnToolResult,
+			resolveCursorCompactionThreshold: this.#cursorCompactionThreshold,
 			cwd: this.#cwd,
 			getCwd: this.#cwdResolver,
 			transformToolCallArguments: this.#transformToolCallArguments,

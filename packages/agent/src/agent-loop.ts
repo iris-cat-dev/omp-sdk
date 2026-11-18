@@ -9,6 +9,7 @@ import {
 	type ComputerAction,
 	type ComputerSafetyCheck,
 	type Context,
+	CURSOR_COMPACTION_STOP_DETAIL,
 	EventStream,
 	isApiKeyResolver,
 	type Model,
@@ -1608,6 +1609,15 @@ async function runLoopBody(
 					return;
 				}
 
+				if (message.stopDetails?.type === CURSOR_COMPACTION_STOP_DETAIL) {
+					// Cursor has already executed the whole batch. Leave queued input
+					// untouched until the session has compacted this history.
+					await emitTurnEnd(stream, currentContext, message, [], config, signal);
+					turnOpen = false;
+					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
+					return;
+				}
+
 				// Run tools whenever the turn carries tool_use blocks AND was not truncated.
 				// `stop_reason` is provider metadata that never goes back on the wire, so it
 				// does not gate continuation validity: replaying a tool_use turn with the
@@ -2189,6 +2199,10 @@ async function streamAssistantResponse(
 				signal: finalRequestSignal,
 				onResponse: captureOnResponse,
 				cursorOnToolResult: collectCursorToolResult,
+				cursorCompactionThreshold:
+					model.api === "cursor-agent"
+						? (config.resolveCursorCompactionThreshold?.(model) ?? config.cursorCompactionThreshold)
+						: undefined,
 				liveSteering: providerCall.liveSteering,
 			});
 			const providerResponse = response;
@@ -2305,10 +2319,11 @@ async function streamAssistantResponse(
 
 					const event = next.value;
 					if (event.type === "done" || event.type === "error") {
-						let finalMessage = recoverTransientErrorToolTurn(
-							retainCompletedToolCalls(await response.result(), completedToolCallIds),
-							context.tools ?? [],
-						);
+						const completed = retainCompletedToolCalls(await response.result(), completedToolCallIds);
+						let finalMessage =
+							completed.api === "cursor-agent" && AIError.isContextOverflow(completed, model.contextWindow ?? 0)
+								? completed
+								: recoverTransientErrorToolTurn(completed, context.tools ?? []);
 						if (harmonyMitigationEnabled) {
 							const detection = detectHarmonyLeakInAssistantMessage(finalMessage);
 							if (detection) {

@@ -213,6 +213,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types";
+import { CURSOR_COMPACTION_STOP_DETAIL } from "../types";
 import { normalizeSystemPrompts, normalizeToolCallId } from "../utils";
 import {
 	type CursorExecResolvedCarrier,
@@ -439,6 +440,8 @@ export interface CursorOptions extends StreamOptions {
 	conversationId?: string;
 	execHandlers?: CursorExecHandlers;
 	onToolResult?: CursorToolResultHandler;
+	/** Stop at a fully resolved tool boundary to let the host compact. */
+	compactionThreshold?: number;
 	/**
 	 * The caller's client runs every tool (auth-gateway). Cursor is limited to
 	 * MCP calls, every context tool is advertised as one, and a turn that hands
@@ -1368,6 +1371,9 @@ function streamCursorWithWireMode(
 					return persisted;
 				}
 			: undefined;
+		// External-tool clients own their boundaries; do not intercept their runs.
+		const compactionThreshold = options?.externalToolExecutor ? undefined : options?.compactionThreshold;
+		let stoppedForCompaction = false;
 		// An external executor's run parks between its client's requests when the
 		// session can hold it (`CursorParkedRun`). Not on RunSSE, whose transport
 		// is bound to the first request's signal.
@@ -1659,7 +1665,42 @@ function streamCursorWithWireMode(
 				void dispatch.finally(() => inFlightDispatches.delete(dispatch));
 			};
 
+			const stopForCompaction = (): boolean => {
+				if (
+					compactionThreshold === undefined ||
+					sawTurnEnded ||
+					endStreamError ||
+					options?.signal?.aborted ||
+					!latestCheckpoint ||
+					latestCheckpoint.pendingToolCalls.length > 0 ||
+					(latestCheckpoint.tokenDetails?.usedTokens ?? 0) <= compactionThreshold ||
+					!state.execOrder?.idle ||
+					state.currentToolCall !== null ||
+					state.openToolCalls.size > 0 ||
+					output.content.at(-1)?.type !== "toolCall"
+				) {
+					return false;
+				}
+				// The server checkpoint is clean and the host has every result
+				// needed to rebuild this batch without executing any call again.
+				if (
+					output.content.some(
+						block =>
+							block.type === "toolCall" && (!isCursorExecResolved(block) || !turnRecords.stored.has(block.id)),
+					)
+				) {
+					return false;
+				}
+				stoppedForCompaction = true;
+				h2Settled = true;
+				state.execOrder.close();
+				resultTransport.close();
+				h2Completion.resolve();
+				return true;
+			};
+
 			runTransport.onData((chunk: Buffer) => {
+				if (stoppedForCompaction) return;
 				if (debugResponseLogPromise) {
 					void debugResponseLogPromise.then(log => {
 						log?.write(chunk);
@@ -1737,6 +1778,7 @@ function streamCursorWithWireMode(
 						if (isTurnEnded) {
 							sawTurnEnded = true;
 						}
+						if (serverMessage.message.case === "conversationCheckpointUpdate" && stopForCompaction()) break;
 					} catch (e) {
 						log("error", "parseServerMessage", { error: String(e) });
 					}
@@ -1938,6 +1980,10 @@ function streamCursorWithWireMode(
 			// unpaired and stripped from every rebuilt transcript. Each dispatch
 			// already swallows its own rejection, so this only waits.
 			await drainInFlightDispatches();
+			if (stoppedForCompaction) {
+				options?.signal?.throwIfAborted();
+				output.stopDetails = { type: CURSOR_COMPACTION_STOP_DETAIL };
+			}
 
 			endCurrentTextBlock(output, stream, state);
 			endCurrentThinkingBlock(output, stream, state);
@@ -2123,6 +2169,13 @@ function streamCursorWithWireMode(
 			const noProgressResumes = repeatedCheckpoint ? (retryContext?.noProgressResumes ?? 0) + 1 : 0;
 			const canRetryFromCheckpoint =
 				replaySafe &&
+				// The host needs the completed tools, not a retry of the same
+				// over-budget checkpoint. Standalone and relayed runs own recovery.
+				!(
+					!options?.externalToolExecutor &&
+					turnRecords.stored.size > 0 &&
+					AIError.isUsageBackedContextOverflow(output, model.contextWindow ?? 0)
+				) &&
 				!options?.signal?.aborted &&
 				retryAttempt < CURSOR_MAX_STREAM_RETRIES &&
 				noProgressResumes <= 2 &&
@@ -7512,14 +7565,14 @@ function buildCursorConversationState(
 					readPaths: [],
 				});
 
-	// Always override `rootPromptMessagesJson` and `turns` with history built from
-	// `context.messages`: compaction, edits and branches rewrite it, and the cached
-	// checkpoint reflects none of them.
+	// Rebuilt history does not resume the last checkpoint's in-flight calls.
+	// Only the exact checkpoint retry path can replay those.
 	return {
 		conversationState: create(ConversationStateStructureSchema, {
 			...baseState,
 			rootPromptMessagesJson,
 			turns,
+			pendingToolCalls: [],
 		}),
 		replayed: replays.size > 0,
 	};

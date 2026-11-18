@@ -83,7 +83,7 @@ import type {
 	UsageReport,
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
-import { type Effort, serviceTierFamily, streamSimple } from "@oh-my-pi/pi-ai";
+import { CURSOR_COMPACTION_STOP_DETAIL, type Effort, serviceTierFamily, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { prewarmModelConnection } from "@oh-my-pi/pi-ai/providers/connection-prewarm";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-state";
@@ -2742,6 +2742,7 @@ export class AgentSession implements SettingsScope {
 			model: () => this.model,
 			thinkingLevel: () => this.thinkingLevel,
 			isDisposed: () => this.#isDisposed,
+			abortInProgress: () => this.#abortInProgress || this.#userStopped,
 			isStreaming: () => this.isStreaming || this.#userStopped,
 			isGeneratingHandoff: () => this.isGeneratingHandoff,
 			promptGeneration: () => this.#promptGeneration,
@@ -2858,6 +2859,7 @@ export class AgentSession implements SettingsScope {
 			abortHandoff: () => this.abortHandoff(),
 		};
 		this.#maintenance = new SessionMaintenance(maintenanceHost);
+		this.agent.setCursorCompactionThreshold(model => this.#maintenance.cursorCompactionThreshold(model));
 		this.addDisposer(
 			this.agent.addBeforeModelCallHook((_signal, context) =>
 				this.#maintenance.renderArchiveForModel(context.messages),
@@ -5056,6 +5058,38 @@ export class AgentSession implements SettingsScope {
 			}
 			this.#lastSuccessfulYieldToolCallId = undefined;
 
+			const model = this.model;
+			const cursorCompactionBoundary =
+				msg.stopReason === "stop" && msg.stopDetails?.type === CURSOR_COMPACTION_STOP_DETAIL;
+			const cursorOverflow =
+				msg.api === "cursor-agent" &&
+				msg.provider === model?.provider &&
+				msg.model === model.id &&
+				AIError.isContextOverflow(msg, model.contextWindow ?? 0);
+			if (
+				cursorCompactionBoundary ||
+				(cursorOverflow && this.#recovery.classifyResolvedInterruptedToolTurn(msg) === "stream-stall")
+			) {
+				maintenanceRoute(
+					cursorCompactionBoundary ? "cursor-tool-compaction-boundary" : "cursor-overflow-before-retry",
+				);
+				// The assistant and its tool results form one replayable group. Wait
+				// for the whole group, then compact it in place instead of rolling the
+				// failed assistant turn back past tools that already executed.
+				await this.#messageEndPersistenceTail;
+				const compactionTask = this.#maintenance.compactCursorToolTurn(
+					msg,
+					cursorOverflow ? "overflow" : "threshold",
+				);
+				this.#trackPostPromptTask(compactionTask);
+				const result = await compactionTask;
+				if (result.automaticContinuationBlocked) this.#queuedMessageDrainBlocked = true;
+				this.#recovery.resolveRetry();
+				await this.#recovery.onErrorSettledWithoutRetry(msg, result);
+				await emitAgentEndNotification(result.continuationScheduled ? { willContinue: true } : undefined);
+				return;
+			}
+
 			// Empty-stop cleanup MUST run before any compaction continuation: an
 			// empty toolUse stop must be stripped from active context + session
 			// history before we schedule another turn, otherwise the next
@@ -6524,6 +6558,7 @@ export class AgentSession implements SettingsScope {
 		// is repopulated with exactly the state we are trying to drop.
 		this.agent.setProviderResponseInterceptor(undefined);
 		this.agent.setRawSseEventInterceptor(undefined);
+		this.agent.setCursorCompactionThreshold(undefined);
 		let drained = false;
 		try {
 			await withTimeout(

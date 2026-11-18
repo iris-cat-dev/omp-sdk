@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Queued messages wait for context maintenance when a Cursor tool batch yields for compaction.
 - Preserved typed tool-error details through cancellation so hosts retain the last real execution trace and cancellation metadata.
 - Cancellation now waits for accepted execution and provider cleanup to finish before acknowledging Stop, without allowing queued input to restart the cancelled run.
 - Kept host-assigned user-message correlation identifiers out of model input.

@@ -60,6 +60,9 @@ import type { AssistantMessageEventStream } from "./utils/event-stream";
 export type { StopDetails } from "./providers/anthropic-wire";
 export type { AssistantMessageEventStream } from "./utils/event-stream";
 
+/** Cursor ended a tool batch so the host can compact before resuming it. */
+export const CURSOR_COMPACTION_STOP_DETAIL = "cursor_context_compaction";
+
 /**
  * Ceiling on the output-token count omp requests from any OpenAI-family endpoint
  * (openai-responses, azure/xai responses, and openai-completions).
@@ -824,6 +827,8 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	 * A rejecting transformer is swallowed and the reserved payload stands in.
 	 */
 	cursorOnToolResult?: CursorToolResultHandler;
+	/** Give control back to the host at a settled Cursor tool batch above this token count. */
+	cursorCompactionThreshold?: number;
 	/** The caller's client runs every tool: Cursor offers them all as MCP tools and hands each call off to it. */
 	cursorExternalToolExecutor?: boolean;
 	/**

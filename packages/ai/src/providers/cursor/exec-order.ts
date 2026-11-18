@@ -19,6 +19,10 @@ export class CursorExecOrder {
 		return this.#isClosed;
 	}
 
+	get idle(): boolean {
+		return this.#calls.size === 0;
+	}
+
 	/** Called synchronously in frame arrival order; false means the run ended while waiting. */
 	enter(callId: string, exclusive: boolean): Promise<boolean> {
 		if (this.#isClosed) return Promise.resolve(false);
