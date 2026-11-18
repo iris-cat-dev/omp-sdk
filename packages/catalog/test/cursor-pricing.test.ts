@@ -114,19 +114,87 @@ describe("cursor API-equivalent pricing", () => {
 			cacheRead: 0.15,
 			cacheWrite: 0,
 		});
-		// Opus 5.5 runs 20% below Opus 5 with a discounted cache-read rate;
-		// its fast lane bills at base since no fast multiplier is published.
+		expect(buildModel(spec("muse-wonder-1.0")).cost).toMatchObject({
+			input: 4,
+			output: 20,
+			cacheRead: 0.2,
+			cacheWrite: 0,
+		});
+		expect(buildModel(spec("muse-wonder-1.0-1m")).cost).toMatchObject({
+			input: 4,
+			output: 20,
+			cacheRead: 0.2,
+			cacheWrite: 0,
+		});
+		expect(buildModel(spec("claude-fable-5-2")).cost).toMatchObject({
+			input: 8,
+			output: 40,
+			cacheRead: 0.2,
+			cacheWrite: 10,
+		});
+		expect(buildModel(spec("claude-sonnet-5-5")).cost).toMatchObject({
+			input: 2,
+			output: 10,
+			cacheRead: 0.1,
+			cacheWrite: 2.5,
+		});
+		expect(buildModel(spec("claude-haiku-4-5")).cost).toMatchObject({
+			input: 1,
+			output: 5,
+			cacheRead: 0.1,
+			cacheWrite: 1.25,
+		});
+		expect(buildModel(spec("gemini-2.5-flash")).cost).toMatchObject({
+			input: 0.3,
+			output: 2.5,
+			cacheRead: 0.03,
+			cacheWrite: 0,
+		});
+		expect(buildModel(spec("gemini-3.7-flash")).cost).toMatchObject({
+			input: 0.75,
+			output: 3.75,
+			cacheRead: 0.075,
+			cacheWrite: 0,
+		});
+		expect(buildModel(spec("gemini-3.8-flash")).cost).toMatchObject({
+			input: 0.75,
+			output: 3.75,
+			cacheRead: 0.075,
+			cacheWrite: 0,
+		});
+		expect(buildModel(spec("gemini-4-hydrogen")).cost).toMatchObject({
+			input: 1.5,
+			output: 7.5,
+			cacheRead: 0.075,
+			cacheWrite: 0,
+		});
+		expect(buildModel(spec("glm-5p3")).cost).toMatchObject({
+			input: 1.4,
+			output: 4.4,
+			cacheRead: 0.26,
+			cacheWrite: 0,
+		});
+		expect(buildModel(spec("glm-5p3-flash")).cost).toMatchObject({
+			input: 0.15,
+			output: 0.5,
+			cacheRead: 0.029,
+			cacheWrite: 0,
+		});
+		// Opus 5.5 runs 20% below Opus 5 with a discounted cache-read rate.
 		expect(buildModel(spec("claude-opus-5-5")).cost).toMatchObject({
 			input: 4,
 			output: 20,
 			cacheRead: 0.2,
 			cacheWrite: 5,
 		});
-		expect(buildModel(spec("claude-opus-5-5-fast")).cost).toMatchObject({
-			input: 4,
-			output: 20,
-			cacheRead: 0.2,
-			cacheWrite: 5,
+		for (const id of ["claude-opus-5-5-fast", "claude-opus-5-5-high-fast", "claude-opus-5-5-1m-fast"]) {
+			expect(buildModel(spec(id)).cost, id).toMatchObject({ input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10 });
+		}
+		expect(buildModel(spec("claude-opus-5-high-fast")).cost).toMatchObject({
+			input: 10,
+			output: 50,
+			cacheRead: 1,
+			cacheWrite: 12.5,
 		});
 		// DeepSeek V4.1 Flash 1017 bills one card for its bare id and every
 		// reasoning-effort wire id.
@@ -143,6 +211,22 @@ describe("cursor API-equivalent pricing", () => {
 				output: 1.2,
 				cacheRead: 0.006,
 				cacheWrite: 0,
+			});
+		}
+	});
+
+	it("uses the published GPT long-context rates on the 1M lanes", () => {
+		for (const [id, input, output, cacheRead] of [
+			["gpt-5.4-1m", 5, 22.5, 0.5],
+			["gpt-5.4-1m-fast", 10, 45, 1],
+			["gpt-5.5-1m", 10, 45, 1],
+			["gpt-5.6-sol-1m", 8, 20, 0.8],
+		] as const) {
+			expect(buildModel(spec(id)).cost.longContext, id).toMatchObject({
+				inputThreshold: 272_000,
+				input,
+				output,
+				cacheRead,
 			});
 		}
 	});
@@ -230,6 +314,8 @@ describe("cursor API-equivalent pricing", () => {
 			"claude-fable-5-max",
 			"claude-fable-5-medium",
 			"claude-fable-5-xhigh",
+			"claude-fable-5-2",
+			"claude-haiku-4-5",
 			"claude-opus-4-7-high",
 			"claude-opus-4-7-high-fast",
 			"claude-opus-4-7-low",
@@ -262,6 +348,8 @@ describe("cursor API-equivalent pricing", () => {
 			"claude-opus-5-thinking-max-fast",
 			"claude-opus-5-thinking-xhigh",
 			"claude-opus-5-thinking-xhigh-fast",
+			"claude-sonnet-5-5",
+			"claude-sonnet-5-5-1m",
 			"claude-sonnet-5-high",
 			"claude-sonnet-5-low",
 			"claude-sonnet-5-max",
@@ -281,6 +369,7 @@ describe("cursor API-equivalent pricing", () => {
 			"deepseek-v41-flash-1017-medium",
 			"deepseek-v41-flash-1017-none",
 			"default",
+			"gemini-2.5-flash",
 			"gemini-3-flash",
 			"gemini-3-pro",
 			"gemini-3.1-pro",
@@ -290,7 +379,10 @@ describe("cursor API-equivalent pricing", () => {
 			"gemini-3.8-flash",
 			"gemini-4-argon",
 			"gemini-4-carbon",
+			"gemini-4-hydrogen",
 			"glm-5.2",
+			"glm-5p3",
+			"glm-5p3-flash",
 			"gpt-5-mini",
 			"gpt-5.1",
 			"gpt-5.1-codex-max",
@@ -350,6 +442,8 @@ describe("cursor API-equivalent pricing", () => {
 			"kimi-k3-low",
 			"kimi-k3-max",
 			"muse-spark-1.3",
+			"muse-wonder-1.0",
+			"muse-wonder-1.0-1m",
 		];
 		const unpriced: Record<string, true> = {
 			// Absent from https://cursor.com/docs/models-and-pricing; left

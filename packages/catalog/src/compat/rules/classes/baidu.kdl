@@ -1,7 +1,7 @@
 // Model-lineage compat for "baidu"; regenerated from the frozen census using class taxonomy selectors.
 
 class "baidu" {
-	on "aimlapi" "kilo" "nanogpt" "novita"  {
+	on "aimlapi" "kilo" "nanogpt" "novita" {
 		family "ernie" {
 			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		}

@@ -2,17 +2,24 @@
 
 ## [Unreleased]
 
-### Removed
+### Added
 
-- Removed the ZenMux (`zenmux`) and SingularityAPI (`singularityapi-dev`, `singularityapi-tech`) providers.
+- Synced catalog data and compatible provider rules from upstream `18.22.2`, including Gemini 4 Hydrogen and Carbon, Claude Fable and Mythos 5.2, GPT-6.2 Astra and Sol, Kimi K3.1 Pro, and Muse Ember. Desktop retains its local runners and retired-provider exclusions; new ACP and decision transports are not part of this sync.
+- Added bundled Cursor lanes from live `AvailableModels` metadata and updated `providers/cursor.kdl` with verified Cursor context-window floors (`gemini-4-*`, `gemini-3.5-flash`, `gemini-3.8-flash`, `glm-5p3*`, `muse-wonder-1.0*`, `claude-haiku-5.5`), effort ladders (`gemini-4-*`, `gemini-3.8-flash`, `claude-fable-5-2`), image inputs, and official API rate cards (`gemini-4-hydrogen`, `gemini-3.7/3.8-flash`, `gemini-2.5-flash`, `claude-fable-5-2`, `claude-sonnet-5-5`, `claude-haiku-4-5`, `glm-5p3*`, `muse-wonder-1.0*`).
 
 ### Fixed
 
+- Corrected Cursor Opus 5/5.5 Fast rates and GPT-5.4/5.5 long-context pricing; the 1M GPT-5.6 lanes now retain their long-context rate cards.
+- Removed the 2-second cap on Cursor `AvailableModels` discovery timeouts so slower responses use the caller's full discovery budget instead of prematurely falling back to `GetUsableModels`.
 - Fixed Codex subscription model discovery omitting available GPT-6.2 Astra and Sol models.
 - Fixed Cursor model listings omitting available GLM 5.3 and Grok 4.7 models, while excluding hidden and Cmd-K-only entries and refreshing older cached rosters ([#18248](https://github.com/can1357/oh-my-pi/pull/18248) by [@joseotaviorf](https://github.com/joseotaviorf), with [hidden-model filtering](https://github.com/can1357/oh-my-pi/commit/51adeafb7f247a04f52db8ac4f2c8895b9aae458)).
 - Added Cursor Gemini 4 Carbon pricing, including the scheduled December 1 rate change, instead of reporting zero cost ([#18734](https://github.com/can1357/oh-my-pi/pull/18734) by [@eggpeat](https://github.com/eggpeat)).
 - Fixed model discovery reusing account access cached before OAuth accounts were added or removed, while preserving offline catalog fallback ([#142](https://github.com/iris-cat-dev/omp/issues/142)).
 - Fixed Cursor's DeepSeek V4.1 Flash 1017 reporting zero cost; every effort level now bills at Cursor's API rate of $0.30/$1.20 per million tokens, with cache reads at $0.006 ([#17390](https://github.com/can1357/oh-my-pi/pull/17390) by [@eggpeat](https://github.com/eggpeat))
+
+### Removed
+
+- Removed the ZenMux (`zenmux`) and SingularityAPI (`singularityapi-dev`, `singularityapi-tech`) providers.
 
 ## [18.14.0] - 2026-10-29
 

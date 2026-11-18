@@ -18,7 +18,7 @@ class "minimax" {
 		}
 	}
 	on "aimlapi" "coreweave" "fireworks" "huggingface" "kilo" "nanogpt" "novita" "nvidia" \
-		"opencode-go" "opencode-zen" "together" "venice" "wafer-serverless"  {
+		"opencode-go" "opencode-zen" "together" "venice" "wafer-serverless" {
 		family "m3" {
 			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		}

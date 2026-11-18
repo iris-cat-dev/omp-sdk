@@ -4,6 +4,7 @@ import { CODEX_BASE_URL, CODEX_CLIENT_VERSION } from "../wire/codex";
 import { CURSOR_DEFAULT_BASE_URL } from "../wire/cursor";
 import { type AccountScope, factoryDroidModelCacheProviderId } from "../wire/factory-droid";
 import { PERSONAL_GITHUB_COPILOT_BASE_URL } from "../wire/github-copilot";
+import { normalizeModalBaseUrl } from "../wire/modal";
 
 export interface ModelCacheProviderIdOptions extends AccountScope {
 	apiKey?: string;
@@ -20,6 +21,11 @@ const CREDENTIAL_SCOPED_MODEL_CACHE_PROVIDERS: Readonly<Record<string, true>> = 
 	// Kimi Code's roster is plan-gated and discovery is authoritative, so a
 	// shared namespace would serve one plan's ids to another plan's credential.
 	"kimi-code": true,
+	otari: true,
+	litellm: true,
+	bifrost: true,
+	openrouter: true,
+	modal: true,
 };
 
 /** Whether a provider's model-cache namespace requires its resolved credential. */
@@ -40,6 +46,12 @@ export function getDefaultModelDiscoveryBaseUrl(providerId: string): string | un
 			return "http://127.0.0.1:11434";
 		case "litellm":
 			return process.env.LITELLM_BASE_URL ?? "http://localhost:4000/v1";
+		case "modal":
+			return normalizeModalBaseUrl(process.env.MODAL_BASE_URL);
+		case "otari":
+			return process.env.OTARI_BASE_URL?.trim() || "https://api.otari.ai/api/v1";
+		case "bifrost":
+			return process.env.BIFROST_BASE_URL?.trim() || "http://localhost:8080/v1";
 		case "opencode-go":
 			return "https://opencode.ai/inference/go/v1";
 		case "opencode-zen":
@@ -107,10 +119,11 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			// account subject instead of the rotating JWT; v5 drops rows that still
 			// mark the account default `isProviderDefault`, which startup now honors.
 			// v6 refetches rosters written while rich variants were gated on GetUsableModels slugs, which hid models Cursor serves (GLM 5.3, Grok 4.7).
+			// v7 rebuilds normalized context windows and rate cards for current models.
 			const baseUrl = (options.baseUrl ?? CURSOR_DEFAULT_BASE_URL).replace(/\/+$/, "");
 			const apiKey = options.apiKey ?? "";
 			const scope = `${jwtCredentialSubject(apiKey) ?? apiKey}\u0000${baseUrl}`;
-			return `cursor:rich-models-v6:${runtime.hash(scope).toString(36)}`;
+			return `cursor:rich-models-v7:${runtime.hash(scope).toString(36)}`;
 		}
 		case "charm-hyper": {
 			// Discovery is authoritative for this gateway, so a warm cache is served
@@ -140,10 +153,17 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			const scope = `${jwtCredentialSubject(apiKey) ?? apiKey}\u0000${baseUrl}`;
 			return `kimi-code:models-v1:${runtime.hash(scope).toString(36)}`;
 		}
-		case "muse-code": {
+		case "muse-code":
+		case "otari":
+		case "bifrost": {
 			const baseUrl = options.baseUrl ?? getDefaultModelDiscoveryBaseUrl(providerId)!;
 			const scope = `${options.apiKey ?? ""}\u0000${baseUrl}`;
-			return `muse-code:models-v1:${runtime.hash(scope).toString(36)}`;
+			return `${providerId}:models-v1:${runtime.hash(scope).toString(36)}`;
+		}
+		case "modal": {
+			const baseUrl = normalizeModalBaseUrl(options.baseUrl ?? process.env.MODAL_BASE_URL);
+			const scope = `${options.apiKey ?? ""}\u0000${baseUrl}`;
+			return `modal:models-v1:${runtime.hash(scope).toString(36)}`;
 		}
 		case "litellm": {
 			const baseUrl = options.baseUrl ?? getDefaultModelDiscoveryBaseUrl(providerId)!;
@@ -194,8 +214,11 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 		}
 		case "factory-droid":
 			return factoryDroidModelCacheProviderId(options);
-		case "openrouter":
-			return "openrouter:pseudo-api";
+		case "openrouter": {
+			const baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/g, "");
+			const scope = `${options.apiKey ?? ""}\u0000${baseUrl}`;
+			return `openrouter:pseudo-api:${runtime.hash(scope).toString(36)}`;
+		}
 		case "vllm": {
 			// v2: qwen3.8 rows cached before the reasoning/template-effort upgrade
 			// carry `reasoning: false` and must be refetched.

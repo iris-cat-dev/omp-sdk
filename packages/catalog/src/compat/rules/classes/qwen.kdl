@@ -4,10 +4,10 @@ class "qwen" {
 	// Groq owns its Qwen effort ladder in providers/groq.kdl.
 	on "aiand" "aimlapi" "alibaba-coding-plan" "amazon-bedrock" "coreweave" "huggingface" \
 		"kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "openrouter" "synthetic" \
-		"together" "venice" "wafer-serverless"  {
+		"together" "venice" "wafer-serverless" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	on "aimlapi" "coreweave" "venice"  {
+	on "aimlapi" "coreweave" "venice" {
 		// residue: the dated 235B thinking SKU cannot disable reasoning; the
 		// old range selector leaned on size-token misparses (3.235) and is
 		// pinned to the exact lineage instead.

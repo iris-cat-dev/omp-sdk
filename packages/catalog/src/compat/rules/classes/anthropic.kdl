@@ -111,6 +111,14 @@ class "anthropic" {
 			thinking-prefix-binding #true
 		}
 	}
+	// Mythos 5.1 enforces the same prefix check on every account, and 5.2
+	// shares Fable 5.2's behavior.
+	// https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2#editing-earlier-turns-invalidates-thinking-blocks
+	family "mythos" {
+		revision ">=5.1" {
+			thinking-prefix-binding #true
+		}
+	}
 	// Adaptive Claude (Opus 4.7+, Sonnet/Fable/Mythos 5+, Haiku 5.5+) rejects explicit
 	// sampling params (`temperature`, `top_p`, `top_k`) with a 400 on every
 	// serving host. The `<10` bound keeps whole-number revisions such as
@@ -202,6 +210,22 @@ class "anthropic" {
 	on "anthropic" {
 		revision ">=4.5" {
 			stops-output-at-context-window #true
+		}
+	}
+	// Message threads (`message-threads-2026-08-12`) keep the conversation on
+	// the server so later turns send only new messages. Claude 4.5 and newer
+	// support them on the Claude API; the transport checks the effective URL
+	// per request because `ANTHROPIC_BASE_URL` / Foundry reroutes leave this
+	// flag stale. Vertex and Bedrock do not support them.
+	// https://platform.claude.com/docs/en/build-with-claude/message-threads
+	on "anthropic" {
+		on-api "anthropic-messages" {
+			revision ">=4.5" {
+				supports-message-threads #true
+			}
+			models "claude-mythos-preview" {
+				supports-message-threads #true
+			}
 		}
 	}
 	// Opus 5.5 rejects forced tool selection the way Fable/Mythos do — a
@@ -338,7 +362,7 @@ class "anthropic" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
 	on "amazon-bedrock" "anthropic" "cloudflare-ai-gateway" "github-copilot" "gitlab-duo" \
-		"google-antigravity" "google-vertex" "opencode-zen" "snowflake" "vercel-ai-gateway"  {
+		"google-antigravity" "google-vertex" "opencode-zen" "snowflake" "vercel-ai-gateway" {
 		family "sonnet" {
 			revision ">=3.7 <4.6" {
 				thinking-mode "budget"
@@ -346,7 +370,7 @@ class "anthropic" {
 		}
 	}
 	on "amazon-bedrock" "anthropic" "cloudflare-ai-gateway" "github-copilot" "gitlab-duo" \
-		"google-vertex" "opencode-zen" "snowflake" "vercel-ai-gateway" {
+		"google-vertex" "opencode-go" "opencode-zen" "snowflake" "vercel-ai-gateway" {
 		family "haiku" {
 			thinking-mode "budget"
 			// Haiku 5.5 is the first adaptive Haiku: `budget_tokens` is a 400.
@@ -360,7 +384,7 @@ class "anthropic" {
 		}
 	}
 	on "amazon-bedrock" "anthropic" "cloudflare-ai-gateway" "github-copilot" "gitlab-duo" \
-		"google-vertex" "opencode-zen" "snowflake" "vercel-ai-gateway"  {
+		"google-vertex" "opencode-zen" "snowflake" "vercel-ai-gateway" {
 		family "opus" {
 			revision ">=4.5 <4.6" {
 				thinking-mode "anthropic-budget-effort"
@@ -368,7 +392,7 @@ class "anthropic" {
 		}
 	}
 	on "amazon-bedrock" "anthropic" "cloudflare-ai-gateway" "github-copilot" "google-vertex" \
-		"opencode-zen" "openrouter" "snowflake" "vercel-ai-gateway"  {
+		"opencode-zen" "openrouter" "snowflake" "vercel-ai-gateway" {
 		family "opus" {
 			revision ">=4.6 <4.7" {
 				thinking-efforts "low" "medium" "high" "max"
@@ -376,7 +400,7 @@ class "anthropic" {
 		}
 	}
 	on "amazon-bedrock" "anthropic" "cloudflare-ai-gateway" "github-copilot" "google-vertex" \
-		"opencode-zen" "snowflake" "vercel-ai-gateway"  {
+		"opencode-go" "opencode-zen" "snowflake" "vercel-ai-gateway" {
 		revision ">=4.7 <45.1" {
 			thinking-mode "anthropic-adaptive"
 		}
@@ -405,14 +429,14 @@ class "anthropic" {
 			}
 		}
 	}
-	on "anthropic" "cloudflare-ai-gateway" "github-copilot" "google-vertex" "opencode-zen" \
-		"openrouter" "snowflake" "vercel-ai-gateway"  {
+	on "anthropic" "cloudflare-ai-gateway" "github-copilot" "google-vertex" "opencode-go" \
+		"opencode-zen" "openrouter" "snowflake" "vercel-ai-gateway" {
 		revision ">=4.7 <45.1" {
 			thinking-efforts "low" "medium" "high" "xhigh" "max"
 		}
 	}
 	on "anthropic" "cloudflare-ai-gateway" "github-copilot" "google-vertex" "opencode-zen" \
-		"snowflake" "vercel-ai-gateway"  {
+		"snowflake" "vercel-ai-gateway" {
 		family "sonnet" {
 			revision ">=4.6 <5" {
 				thinking-efforts "low" "medium" "high"
@@ -434,8 +458,13 @@ class "anthropic" {
 			}
 		}
 		// Anthropic's /v1/models omits token limits and pricing for the
-		// Fable/Mythos generation; pin the model-card values.
+		// Fable/Mythos generation; pin the model-card values. It omits
+		// reasoning and vision too, so a row models.dev has not catalogued yet
+		// (Fable 5.2 at launch) would materialize text-only and non-reasoning;
+		// every Fable/Mythos model thinks adaptively and reads images.
 		family "fable" {
+			thinking-upgrade-neutral #true
+			input-modalities "text" "image"
 			cost-patch {
 				input 10.0
 				output 50.0
@@ -457,6 +486,17 @@ class "anthropic" {
 					output 50.0
 					cache-read 0.25
 					cache-write 12.5
+				}
+			}
+			// Fable 5.2 cut input/output to $8/$40 and keeps the 0.025x
+			// cache-read multiplier ($0.20/MTok).
+			// https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2#pricing
+			revision "=5.2" {
+				cost-patch {
+					input 8.0
+					output 40.0
+					cache-read 0.2
+					cache-write 10.0
 				}
 			}
 			limits-patch {
@@ -493,6 +533,8 @@ class "anthropic" {
 			}
 		}
 		family "mythos" {
+			thinking-upgrade-neutral #true
+			input-modalities "text" "image"
 			cost-patch {
 				input 10.0
 				output 50.0
@@ -512,6 +554,15 @@ class "anthropic" {
 					output 50.0
 					cache-read 0.25
 					cache-write 12.5
+				}
+			}
+			// Mythos 5.2 shares Fable 5.2's specs and pricing.
+			revision "=5.2" {
+				cost-patch {
+					input 8.0
+					output 40.0
+					cache-read 0.2
+					cache-write 10.0
 				}
 			}
 			limits-patch {

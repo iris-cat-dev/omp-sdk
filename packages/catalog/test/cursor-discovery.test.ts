@@ -30,6 +30,7 @@ import {
 } from "../src/discovery/cursor-proto";
 import { create, fromBinary, toBinary } from "../src/discovery/protobuf";
 import { collapseBuiltVariants, getVariantAliasSources, resolveVariantSelector } from "../src/compat/collapse";
+import { Effort } from "../src/effort";
 import { resolveProviderModels } from "../src/model-manager";
 import { cursorModelManagerOptions } from "../src/provider-models/special";
 import { calculateUncachedInputCost, getModelPricingStatus } from "../src/models";
@@ -632,7 +633,7 @@ describe("fetchCursorUsableModels", () => {
 		});
 	});
 
-	it("refetches legacy-gated v5 cache rows in the v6 authoritative namespace", async () => {
+	it("refreshes legacy-gated and pre-correction cache namespaces", async () => {
 		const usable = create(GetUsableModelsResponseSchema, {
 			models: [create(ModelDetailsSchema, { modelId: "composer-2.5" })],
 		});
@@ -645,18 +646,20 @@ describe("fetchCursorUsableModels", () => {
 		});
 		const cacheDbPath = await createTempCachePath();
 		const options = cursorModelManagerOptions({ apiKey: "account-token", baseUrl: rpcBaseUrl });
-		expect(options.cacheProviderId).toMatch(/^cursor:rich-models-v6:/);
-		await resolveProviderModels(
-			{
-				providerId: "cursor",
-				cacheProviderId: options.cacheProviderId?.replace("rich-models-v6:", "rich-models-v5:"),
-				cacheDbPath,
-				staticModels: [],
-				fetchDynamicModels: async () => [cursorModelSpec("composer-2.5")],
-				now: () => 1,
-			},
-			"online",
-		);
+		expect(options.cacheProviderId).toMatch(/^cursor:rich-models-v7:/);
+		for (const version of [5, 6]) {
+			await resolveProviderModels(
+				{
+					providerId: "cursor",
+					cacheProviderId: options.cacheProviderId?.replace("rich-models-v7:", `rich-models-v${version}:`),
+					cacheDbPath,
+					staticModels: [],
+					fetchDynamicModels: async () => [cursorModelSpec("composer-2.5")],
+					now: () => 1,
+				},
+				"online",
+			);
+		}
 		const result = await resolveProviderModels(
 			{ ...options, cacheDbPath, staticModels: [], now: () => 2 },
 			"online-if-uncached",
@@ -933,18 +936,30 @@ describe("fetchCursorUsableModels", () => {
 				create(ModelDetailsSchema, { modelId: "glm-5.2-max", displayName: "GLM 5.2 Max" }),
 				create(ModelDetailsSchema, { modelId: "glm-5.10-high", displayName: "GLM 5.10 High" }),
 				create(ModelDetailsSchema, { modelId: "glm-6-max", displayName: "GLM 6 Max" }),
+				create(ModelDetailsSchema, { modelId: "glm-5p3-high", displayName: "GLM 5.3 High" }),
+				create(ModelDetailsSchema, { modelId: "glm-5p3-flash-high", displayName: "GLM 5.3 Flash High" }),
+				create(ModelDetailsSchema, { modelId: "gemini-4-argon-medium", displayName: "Gemini 4 Argon Medium" }),
+				create(ModelDetailsSchema, { modelId: "gemini-4-carbon-medium", displayName: "Gemini 4 Carbon Medium" }),
+				create(ModelDetailsSchema, { modelId: "gemini-4-hydrogen-high", displayName: "Gemini 4 Hydrogen High" }),
+				create(ModelDetailsSchema, { modelId: "gemini-3.8-flash-high", displayName: "Gemini 3.8 Flash High" }),
 			],
 		});
 		const nativeBaseUrl = await startCursorDiscoveryServer(toBinary(GetUsableModelsResponseSchema, response));
 
 		const models = await fetchCursorUsableModels({ apiKey: "test-token", baseUrl: nativeBaseUrl, timeoutMs: 1_000 });
 
-		// The bare-`k3` spellings are rule-owned (`providers/cursor.kdl`
+		// The bare-`k3` and Gemini 4 / GLM 5.3 spellings are rule-owned (`providers/cursor.kdl`
 		// context-window-floor) and reach 1M once the spec is built.
 		const built = models?.map(model => buildModel(model));
 		expect(built).toEqual([
+			expect.objectContaining({ id: "gemini-3.8-flash-high", contextWindow: 1_000_000 }),
+			expect.objectContaining({ id: "gemini-4-argon-medium", contextWindow: 1_000_000 }),
+			expect.objectContaining({ id: "gemini-4-carbon-medium", contextWindow: 1_000_000 }),
+			expect.objectContaining({ id: "gemini-4-hydrogen-high", contextWindow: 1_000_000 }),
 			expect.objectContaining({ id: "glm-5.10-high", contextWindow: 1_000_000 }),
 			expect.objectContaining({ id: "glm-5.2-max", contextWindow: 1_000_000 }),
+			expect.objectContaining({ id: "glm-5p3-flash-high", contextWindow: 1_000_000 }),
+			expect.objectContaining({ id: "glm-5p3-high", contextWindow: 1_000_000 }),
 			expect.objectContaining({ id: "glm-6-max", contextWindow: 1_000_000 }),
 			expect.objectContaining({ id: "k3", contextWindow: 1_000_000 }),
 			expect.objectContaining({ id: "kimi-k3-max", contextWindow: 1_000_000 }),
@@ -997,6 +1012,19 @@ describe("fetchCursorUsableModels", () => {
 			expect.objectContaining({ id: "gpt-5.6-sol-medium", contextWindow: 1_000_000 }),
 			expect.objectContaining({ id: "kimi-k2.7-code", contextWindow: 262_000 }),
 		]);
+	});
+
+	it("applies Cursor Fable 5.2 and Gemini 4 effort ladders on fallback specs", () => {
+		const fable52 = buildModel(cursorModelSpec("claude-fable-5-2"));
+		expect(fable52.contextWindow).toBe(300_000);
+		expect(fable52.thinking?.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
+		expect(fable52.cost).toMatchObject({ input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 });
+		expect(buildModel(cursorModelSpec("claude-fable-5-2-1m")).contextWindow).toBe(1_000_000);
+
+		const hydrogen = buildModel(cursorModelSpec("gemini-4-hydrogen"));
+		expect(hydrogen.contextWindow).toBe(1_000_000);
+		expect(hydrogen.thinking?.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
+		expect(hydrogen.cost).toMatchObject({ input: 1.5, output: 7.5, cacheRead: 0.075, cacheWrite: 0 });
 	});
 
 	it("keeps the default window below the GLM 5.2 floor and outside the coding variants", async () => {
@@ -1270,31 +1298,35 @@ describe("cursor rich discovery review regressions", () => {
 		const cost = (id: string) => {
 			const spec = specs.get(id);
 			if (!spec) throw new Error(`missing lane ${id}`);
-			const built = buildModel(spec).cost;
-			expect(built).toEqual(spec.cost);
-			return built;
+			return buildModel(spec).cost;
 		};
 		expect(cost("cursor-grok-4.5")).toEqual({ input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 });
 		expect(cost("cursor-grok-4.5-fast")).toEqual({ input: 4, output: 18, cacheRead: 1, cacheWrite: 0 });
 		expect(cost("gpt-5.2")).toEqual({ input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 });
 		expect(cost("gpt-5.2-fast")).toEqual({ input: 3.5, output: 28, cacheRead: 0.35, cacheWrite: 0 });
-		expect(cost("gpt-5.4")).toEqual({ input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 });
-		expect(cost("gpt-5.4-fast")).toEqual({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 });
+		expect(cost("gpt-5.4")).toMatchObject({
+			input: 2.5,
+			output: 15,
+			cacheRead: 0.25,
+			cacheWrite: 0,
+			longContext: { inputThreshold: 272_000, input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 0 },
+		});
+		expect(cost("gpt-5.4-fast")).toMatchObject({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 });
 	});
 
 	it.each(["2x more expensive", "2× more expensive"])("reads the declared multiplier from %p", async tooltip => {
 		const specs = await discoverAvailable([
 			create(AvailableModelsResponse_ModelDetailsSchema, {
-				name: "claude-opus-5-5",
+				name: "gpt-5.2",
 				supportsAgent: true,
 				parameterDefinitions: [booleanParameter("fast", tooltip)],
 				variants: [
-					richVariant("claude-opus-5-5-high", { fast: "false" }),
-					richVariant("claude-opus-5-5-high-fast", { fast: "true" }),
+					richVariant("gpt-5.2-high", { fast: "false" }),
+					richVariant("gpt-5.2-high-fast", { fast: "true" }),
 				],
 			}),
 		]);
-		expect(specs.get("claude-opus-5-5-fast")?.cost.input).toBe(8);
+		expect(specs.get("gpt-5.2-fast")?.cost.input).toBe(3.5);
 	});
 
 	it("names enum lanes after the flagged default variant regardless of variant order", async () => {

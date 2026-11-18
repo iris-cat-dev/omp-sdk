@@ -40,13 +40,31 @@ export function toBoolean(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
 }
 
+/**
+ * Service-tier ids from a discovery row's `service_tiers` array, deduplicated
+ * in advertisement order. Entries may be codex-rs `{ id, name, description }`
+ * objects or bare id strings (OpenAI-compatible relays). Returns `undefined`
+ * when the value is not an array; an empty array is kept, since it is a
+ * statement that the model offers no optional tier.
+ */
+export function parseServiceTierIds(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const ids: string[] = [];
+	for (const tier of value) {
+		const raw = tier !== null && typeof tier === "object" && "id" in tier ? tier.id : tier;
+		const id = typeof raw === "string" ? raw.trim() : "";
+		if (id && !ids.includes(id)) ids.push(id);
+	}
+	return ids;
+}
+
 export function isAnthropicOAuthToken(key: string): boolean {
 	return key.includes("sk-ant-oat");
 }
 
 /**
  * Gateway author prefix ("OpenAI: ", "Z.ai: ", "Arcee AI: ") as emitted by
- * aggregator catalogs (OpenRouter, Kilo, NanoGPT).
+ * aggregator catalogs (OpenRouter, Kilo, NanoGPT, ZenMux).
  */
 const AUTHOR_PREFIX = /^[A-Za-z][A-Za-z0-9 .+&'-]{0,23}: /;
 

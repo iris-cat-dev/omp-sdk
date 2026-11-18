@@ -2,7 +2,7 @@
 
 class "stepfun" {
 	on "aimlapi" "huggingface" "kilo" "nanogpt" "novita" "nvidia" \
-		"vercel-ai-gateway"  {
+		"vercel-ai-gateway" {
 		family "step" {
 			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		}

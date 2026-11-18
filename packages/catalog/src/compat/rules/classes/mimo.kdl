@@ -12,14 +12,14 @@ class "mimo" {
 	// MiMo remaps the pi ladder edges (minimal→low, xhigh→high) on every
 	// census host except the Xiaomi first-party endpoints (zai dialect).
 	on "aimlapi" "cline-pass" "deepinfra" "huggingface" "kilo" "nanogpt" "novita" "opencode-go" \
-		"opencode-zen" "openrouter" "venice"  {
+		"opencode-zen" "openrouter" "venice" {
 		reasoning-effort-map {
 			minimal "low"
 			xhigh "high"
 		}
 	}
 	on "aimlapi" "cline-pass" "deepinfra" "huggingface" "kilo" "nanogpt" "novita" "opencode-go" "opencode-zen" "openrouter" \
-		"venice"  {
+		"venice" {
 		family "v2" {
 			thinking-efforts "low" "medium" "high"
 		}

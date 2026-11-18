@@ -133,7 +133,7 @@ export async function fetchCursorUsableModels(
 			CURSOR_AVAILABLE_MODELS_PATH,
 			toBinary(AvailableModelsRequestSchema, availableRequest),
 			options,
-			Math.min(timeoutMs, 2_000),
+			timeoutMs,
 		),
 		fetchCursorUnary(
 			baseUrl,
