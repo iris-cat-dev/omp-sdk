@@ -1945,6 +1945,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		abort_and_prompt: true,
 		abort_and_restore_queue: true,
 		get_state: true,
+		set_session_name: true,
 		get_messages: true,
 		get_messages_page: true,
 		get_entries: true,
