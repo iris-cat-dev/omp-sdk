@@ -1,4 +1,5 @@
 import * as childProcess from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
@@ -119,18 +120,15 @@ export function getAddonFilenames({ tag, arch, variant }) {
 }
 
 /**
- * Decide whether the loader should mirror the package's `native/<filename>.node`
- * into the per-version cache directory (`~/.omp/natives/<version>/`) before loading.
+ * Mirror the package's addon binaries
+ * into an immutable content-identified cache before loading.
  *
- * Windows-only safety net for `bun install -g` updates: when a previous `omp`
- * process is running, bun cannot overwrite the locked `.node` inside
- * `node_modules/@oh-my-pi/pi-natives/native/`, leaving an old binary next to a
- * newer `index.js` and producing `<sym> is not a function` crashes on the next
- * launch. Staging into the version-pinned cache:
- *   1. Gives every package version its own filesystem path, so concurrent omp
- *      processes never collide on the same file.
- *   2. Makes the running process keep its handle on the cache copy, freeing bun
- *      to overwrite the `node_modules` copy on subsequent updates.
+ * Windows-only safety net for installed package updates: a running process
+ * locks its staged `.node`, not the package copy that the installer replaces.
+ * Package versions alone are not identities: Desktop profiles and rebuilt
+ * releases can ship different bytes under the same version and filename.
+ * Each source digest therefore gets its own directory beneath the version
+ * cache, allowing old and new processes to coexist without replacing a DLL.
  * Disabled on non-Windows (no file-lock problem), in workspace dev (`nativeDir`
  * is not inside a `node_modules` segment), and for compiled binaries (handled
  * by `maybeExtractEmbeddedAddon`).
@@ -180,12 +178,13 @@ export function resolveLoaderCandidates({
 		path.join(versionedDir, filename),
 		path.join(userDataDir, filename),
 	]);
-	const stagedCandidates = stageFromNodeModules ? addonFilenames.map(filename => path.join(versionedDir, filename)) : [];
+	// Windows install candidates are supplied only after source-identified
+	// staging. Never probe the legacy version-only cache or lock package files.
 	let releaseCandidates;
 	if (isCompiledBinary) {
 		releaseCandidates = [...compiledCandidates, ...baseReleaseCandidates];
 	} else if (stageFromNodeModules) {
-		releaseCandidates = [...stagedCandidates, ...leafCandidates, ...baseReleaseCandidates];
+		releaseCandidates = [];
 	} else {
 		releaseCandidates = [...leafCandidates, ...baseReleaseCandidates];
 	}
@@ -527,45 +526,96 @@ function maybeExtractEmbeddedAddon(ctx, errors, file = selectEmbeddedAddonFile(c
 }
 
 /**
- * Mirror `leafPackageDir ?? nativeDir` addon binaries to
- * `versionedDir/<filename>.node` on Windows installs so the running process
- * cache path, never on the `node_modules` copy that bun must overwrite on
- * update. No-op on non-Windows, in workspace dev, and for compiled binaries —
- * see `shouldStageNodeModulesAddon` for the gating rules.
+ * Hash incrementally: native addons can be large, and startup must not hold a
+ * second addon-sized JS buffer just to identify or verify a cache entry.
+ */
+function addonDigest(filename, buffer) {
+	const hash = createHash("sha256");
+	const fd = fs.openSync(filename, "r");
+	try {
+		let count;
+		while ((count = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+			hash.update(buffer.subarray(0, count));
+		}
+		return hash.digest("hex");
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function verifyStagedAddon(targetPath, digest, buffer) {
+	if (addonDigest(targetPath, buffer) !== digest) {
+		throw new Error(`Native addon cache integrity mismatch: ${targetPath}; remove this cache entry and retry`);
+	}
+}
+
+/**
+ * Publish a complete directory by rename, never replacing an existing DLL.
+ * A concurrent publisher may win the rename; its entry must still match the
+ * expected bytes. Interrupted copies stay outside the loadable digest paths.
+ */
+function stageAddon(sourcePath, stagingDir, filename, digest, buffer) {
+	const targetDir = path.join(stagingDir, digest);
+	const targetPath = path.join(targetDir, filename);
+	if (fs.existsSync(targetDir)) {
+		verifyStagedAddon(targetPath, digest, buffer);
+		return targetPath;
+	}
+	const tempDir = fs.mkdtempSync(path.join(stagingDir, ".tmp-"));
+	try {
+		const tempPath = path.join(tempDir, filename);
+		fs.copyFileSync(sourcePath, tempPath);
+		if (addonDigest(tempPath, buffer) !== digest) {
+			throw new Error(`Native addon source changed while staging: ${sourcePath}; retry after the update finishes`);
+		}
+		try {
+			fs.renameSync(tempDir, targetDir);
+		} catch (err) {
+			if (!fs.existsSync(targetDir)) throw err;
+			verifyStagedAddon(targetPath, digest, buffer);
+		}
+		return targetPath;
+	} finally {
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Keep installed addons beneath their version directory so the existing
+ * version cleanup protects current entries and refreshes the startup grace
+ * period. Embedded extraction and PI_NATIVES_DIR resolution are unchanged.
  */
 function maybeStageNodeModulesAddon(ctx, errors) {
-	if (!ctx.stageFromNodeModules) return null;
+	if (!ctx.stageFromNodeModules) return [];
 
-	let stagedPath = null;
-	for (const filename of ctx.addonFilenames) {
-		const sourcePath = path.join(ctx.leafPackageDir ?? ctx.nativeDir, filename);
-		const targetPath = path.join(ctx.versionedDir, filename);
-
-		if (fs.existsSync(targetPath)) {
-			stagedPath = stagedPath || targetPath;
-			continue;
+	const stagedPaths = [];
+	const buffer = Buffer.allocUnsafe(64 * 1024);
+	try {
+		prepareNativeVersionDir(ctx.versionedDir);
+		for (const filename of ctx.addonFilenames) {
+			const sourcePath = path.join(ctx.leafPackageDir ?? ctx.nativeDir, filename);
+			try {
+				fs.statSync(sourcePath);
+			} catch (err) {
+				if (err && err.code === "ENOENT") continue;
+				throw err;
+			}
+			const digest = addonDigest(sourcePath, buffer);
+			// Filename separates ISA variants even if their bytes are identical.
+			const stagingDir = path.join(ctx.versionedDir, "node_modules", filename);
+			fs.mkdirSync(stagingDir, { recursive: true });
+			stagedPaths.push(stageAddon(sourcePath, stagingDir, filename, digest, buffer));
 		}
-		if (!fs.existsSync(sourcePath)) continue;
-
-		try {
-			prepareNativeVersionDir(ctx.versionedDir);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			errors.push(`staged addon dir: ${message}`);
-			continue;
-		}
-
-		try {
-			// `copyFileSync` is atomic on Windows (CopyFileW) and avoids holding
-			// two large buffers in JS for the read/write dance.
-			fs.copyFileSync(sourcePath, targetPath);
-			stagedPath = stagedPath || targetPath;
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			errors.push(`staged addon copy (${filename}): ${message}`);
-		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		errors.push(`staged addon: ${message}`);
+		// Fail closed rather than selecting a stale cache or the package copy.
+		return [];
 	}
-	return stagedPath;
+	if (stagedPaths.length === 0) {
+		errors.push(`staged addon: no supplied addon found in ${ctx.leafPackageDir ?? ctx.nativeDir}`);
+	}
+	return stagedPaths;
 }
 
 /**
@@ -887,9 +937,9 @@ export function loadNative() {
 
 	const errors = [];
 	const embeddedCandidate = maybeExtractEmbeddedAddon(ctx, errors);
-	const stagedCandidate = embeddedCandidate ? null : maybeStageNodeModulesAddon(ctx, errors);
-	const prepended = [embeddedCandidate, stagedCandidate].filter(c => typeof c === "string");
-	const runtimeCandidates = prepended.length > 0 ? [...prepended, ...ctx.candidates] : ctx.candidates;
+	const stagedCandidates = embeddedCandidate ? [] : maybeStageNodeModulesAddon(ctx, errors);
+	const prepended = [embeddedCandidate, ...stagedCandidates].filter(c => typeof c === "string");
+	const runtimeCandidates = [...prepended, ...ctx.candidates];
 	const fallbackEmbeddedFile =
 		ctx.selectedVariant === "modern" && embeddedAddon
 			? embeddedAddon.files.find(file => file.variant === "baseline")

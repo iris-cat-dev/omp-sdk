@@ -14,6 +14,7 @@
 
 - Fixed `SandboxFs` rejecting all Windows operations; local drive directories now support pinned-handle reads, atomic writes, listing, metadata, directory creation and file removal.
 - Fixed Windows `SandboxFs` operations failing when reopening the pinned directory; native descriptor-relative reopens now preserve root identity and independent listing cursors, including Unicode paths.
+- Fixed Windows installed addons reusing an older same-version native cache; immutable content-identified staging now loads the supplied build while running processes retain their old DLLs, and rejects corrupt staged entries without falling back to stale binaries.
 - Fixed cancellation leaving native trace commands running after the real run ended; active commands now emit their own signal-status `CmdEnd` before `RunEnd`, including nested functions and loops.
 - Fixed native addon package loading under Node.js and Electron.
 - Fixed Windows Desktop addon builds failing with `EPERM` during temporary-directory cleanup by validating the installed addon instead of loading the temporary DLL.
