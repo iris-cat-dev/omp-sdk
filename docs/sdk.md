@@ -243,7 +243,7 @@ or x64 native dependency closure. Complete modules, worker host, chunks, runtime
 resources, licenses, and selected native sidecars are retained in both modes.
 
 The pinned release contract is `sdk/node-release.json`:
-`iris-cat-dev/omp-sdk`, tag `sdk-v18.14.0-desktop-core.2`, Desktop/core, and
+`iris-cat-dev/omp-sdk`, tag `sdk-v18.14.0-desktop-core.3`, Desktop/core, and
 `darwin-x64`, `darwin-arm64`, `linux-x64`, `linux-arm64`. Linux hosts must use
 glibc; Windows and musl are not supported. The SDK version comes from the
 coding-agent package manifest, not a separate npm version or a `latest` tag.

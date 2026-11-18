@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "iris-cat-dev/omp-sdk",
-  "tag": "sdk-v18.14.0-desktop-core.2",
+  "tag": "sdk-v18.14.0-desktop-core.3",
   "buildTarget": "desktop",
   "profile": "core",
   "targets": ["darwin-x64", "darwin-arm64", "linux-x64", "linux-arm64"]
