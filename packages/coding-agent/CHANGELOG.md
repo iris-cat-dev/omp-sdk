@@ -44,6 +44,7 @@
 
 ### Fixed
 
+- Fixed missing historical image files blocking resumed conversations; unavailable attachments become text in model requests while journal references and healthy images remain intact.
 - Fixed core Node SDK artifacts failing to load directly from unmarked source checkouts; staged packages still require a matching profile marker.
 - Fixed Node CommonJS extensions failing to require shared host package aliases resolved to file URLs.
 - Fixed sandbox sessions failing to start on Windows; secure file access now supports local drive directories without disabling isolation.

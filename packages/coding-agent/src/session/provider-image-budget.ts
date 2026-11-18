@@ -1,5 +1,6 @@
 import { runtime } from "@oh-my-pi/pi-utils/runtime";
 import type {
+	AssistantMessage,
 	Context,
 	DeveloperMessage,
 	ImageContent,
@@ -20,6 +21,99 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { capFrameDataBytes, frameDataBytesBudget, providerImageBudget } from "@oh-my-pi/snapcompact";
 import { supportsRemoteImageUrls } from "../blob-broker/context-images";
 import { imageDecodeFailureReason } from "@oh-my-pi/pi-tui/chat/image-loading";
+import { parseBlobRef } from "./blob-store";
+
+const MISSING_IMAGE_TEXT = "[image unavailable: persisted attachment file is missing]";
+
+/** Hydration leaves missing refs intact for restoration; only the outbound view becomes text. */
+function missingImageRef(value: unknown): boolean {
+	return typeof value === "string" && parseBlobRef(value) !== null;
+}
+
+function replaceMissingNativePart(part: unknown): Record<string, unknown> | undefined {
+	if (!isRecord(part) || part.type !== "input_image" || !missingImageRef(part.image_url)) return undefined;
+	return { type: "input_text", text: MISSING_IMAGE_TEXT };
+}
+
+function replaceMissingNativeItem(item: Record<string, unknown>): Record<string, unknown> | undefined {
+	const part = replaceMissingNativePart(item);
+	if (part) return part;
+	if (item.type === "image_generation_call" && missingImageRef(item.result)) {
+		return { type: "message", role: "assistant", content: MISSING_IMAGE_TEXT };
+	}
+	if (item.type === "computer_call_output" && isRecord(item.output) && missingImageRef(item.output.image_url)) {
+		// Native screenshots cannot carry text. Match the provider's generic computer-result note fallback.
+		return {
+			type: "message",
+			role: "assistant",
+			content: `[Previous computer result; call_id=${item.call_id}]: ${MISSING_IMAGE_TEXT}`,
+		};
+	}
+	let replacement: Record<string, unknown> | undefined;
+	for (const key of ["content", "output"] as const) {
+		const parts = item[key];
+		if (!Array.isArray(parts)) continue;
+		let content: unknown[] | undefined;
+		for (let index = 0; index < parts.length; index++) {
+			const rewritten = replaceMissingNativePart(parts[index]);
+			if (!rewritten) continue;
+			content ??= parts.slice();
+			content[index] = rewritten;
+		}
+		if (content) replacement = { ...(replacement ?? item), [key]: content };
+	}
+	return replacement;
+}
+
+/**
+ * Project unresolved persisted attachments before provider image normalization or validation.
+ * The loader resolves every available blob and propagates non-ENOENT errors, so a canonical
+ * reference still in an image position denotes a missing file. Never mutate the source: a
+ * later journal load must be able to recover the attachment if its blob is restored.
+ */
+export function replaceMissingPersistedImages(message: Message): Message {
+	let projected: Message | undefined;
+	if (Array.isArray(message.content)) {
+		let content: typeof message.content | undefined;
+		for (let index = 0; index < message.content.length; index++) {
+			const part = message.content[index];
+			if (part.type !== "image" || (!missingImageRef(part.data) && !missingImageRef(part.url))) continue;
+			content ??= message.content.slice();
+			content[index] = { type: "text", text: MISSING_IMAGE_TEXT };
+		}
+		if (content) projected = { ...message, content } as Message;
+	}
+	if (message.role === "toolResult") {
+		if (
+			message.providerMetadata?.type === "computer" &&
+			missingImageRef(message.providerMetadata.screenshot.image_url)
+		) {
+			const content = projected?.role === "toolResult" ? projected.content : message.content;
+			projected = {
+				...message,
+				content: content.some(part => part.type === "text" && part.text === MISSING_IMAGE_TEXT)
+					? content
+					: [...content, { type: "text", text: MISSING_IMAGE_TEXT }],
+				providerMetadata: undefined,
+			};
+		}
+		return projected ?? message;
+	}
+	// The tool-result branch returned above; content projection preserves the source role.
+	const source = (projected ?? message) as UserMessage | DeveloperMessage | AssistantMessage;
+	const payload = source.providerPayload;
+	if (payload?.type === "openaiResponsesHistory") {
+		let items: Array<Record<string, unknown>> | undefined;
+		for (let index = 0; index < payload.items.length; index++) {
+			const rewritten = replaceMissingNativeItem(payload.items[index]);
+			if (!rewritten) continue;
+			items ??= payload.items.slice();
+			items[index] = rewritten;
+		}
+		if (items) projected = { ...source, providerPayload: { ...payload, items } };
+	}
+	return projected ?? message;
+}
 
 const IMAGE_OMISSION: TextContent = {
 	type: "text",

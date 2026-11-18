@@ -60,6 +60,7 @@ import userInterjectionTemplate from "../prompts/steering/user-interjection.md" 
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 
+import { replaceMissingPersistedImages } from "./provider-image-budget";
 export {
 	type BranchSummaryMessage,
 	type CompactionSummaryMessage,
@@ -1062,7 +1063,7 @@ registerMessageCacheInvalidator(message => {
 
 /** Convert one message to its LLM fragment. `interruptedNext` is true only for an
  *  assistant turn immediately followed by its interrupted-thinking marker. */
-function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
+function convertOneContent(m: AgentMessage, interruptedNext: boolean): Message[] {
 	switch (m.role) {
 		case "bashExecution":
 			if (m.excludeFromContext) {
@@ -1190,6 +1191,14 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 			m satisfies never;
 			return [];
 	}
+}
+
+function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
+	const fragment = convertOneContent(m, interruptedNext);
+	for (let index = 0; index < fragment.length; index++) {
+		fragment[index] = replaceMissingPersistedImages(fragment[index]);
+	}
+	return fragment;
 }
 
 /**

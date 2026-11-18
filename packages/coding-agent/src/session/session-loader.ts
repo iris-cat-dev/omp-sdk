@@ -787,7 +787,7 @@ function entriesForBlobResolution(entries: FileEntry[]): FileEntry[] {
 	return sessionEntries;
 }
 
-/** Restore the image data that persistence externalized to the blob store, in place. */
+/** Restore available image blobs in place; retain missing refs for ephemeral request conversion and later restoration. */
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
 	await resolveBlobRefs(entriesForBlobResolution(entries), blobStore);
 }
