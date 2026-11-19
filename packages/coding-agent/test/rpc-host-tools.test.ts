@@ -303,4 +303,59 @@ function handle(frame) {
 			await client.stop();
 		}
 	});
+
+	it("restricts active tools via set_active_tools, prevents host-tool leaks, and restores on null", async () => {
+		const rootDir = path.join(
+			os.tmpdir(),
+			`omp-rpc-active-tools-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		tempPaths.push(rootDir);
+		const cliPath = path.resolve(import.meta.dir, "../src/cli.ts");
+		const client = new RpcClient({
+			cliPath,
+			cwd: rootDir,
+			args: ["--no-extensions", "--no-lsp", "--no-context-files", "--no-skills", "--no-rules", "--no-session"],
+			env: {
+				HOME: rootDir,
+				PI_CONFIG_DIR: ".omp",
+				PI_CODING_AGENT_DIR: path.join(rootDir, "agent"),
+				PI_PROFILE: "",
+				OPENAI_API_KEY: "test-no-network",
+			},
+		});
+		const makeHostTool = (name: string) =>
+			defineRpcClientTool({
+				name,
+				description: `Host tool ${name}`,
+				loadMode: "essential",
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+				async execute() {
+					return "ok";
+				},
+			});
+
+		try {
+			await Bun.write(path.join(rootDir, ".keep"), "");
+			await client.start();
+			await client.setCustomTools([makeHostTool("host_ping")]);
+			const initialNames = (await client.getState()).dumpTools?.map(tool => tool.name) ?? [];
+			expect(initialNames).toEqual(
+				expect.arrayContaining(["read", "glob", "grep", "bash", "edit", "write", "host_ping"]),
+			);
+
+			expect(await client.setActiveTools(["read", "glob", "grep"])).toEqual(["read", "glob", "grep"]);
+			expect((await client.getState()).dumpTools?.map(tool => tool.name)).toEqual(["read", "glob", "grep"]);
+
+			await client.setCustomTools([makeHostTool("host_pong")]);
+			expect((await client.getState()).dumpTools?.map(tool => tool.name)).toEqual(["read", "glob", "grep"]);
+
+			const restored = await client.setActiveTools(null);
+			expect(restored).toEqual(
+				expect.arrayContaining(["read", "glob", "grep", "bash", "edit", "write", "host_pong"]),
+			);
+			expect(restored).not.toContain("host_ping");
+		} finally {
+			await client.stop();
+		}
+	}, 30_000);
 });

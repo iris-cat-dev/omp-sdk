@@ -1457,6 +1457,12 @@ export class RpcClient {
 		return this.#getData<{ toolNames: string[] }>(response).toolNames;
 	}
 
+	/** Restrict active tools to an allowlist, or pass null to restore the pre-override presentation. */
+	async setActiveTools(tools: string[] | null): Promise<string[]> {
+		const response = await this.#send({ type: "set_active_tools", tools });
+		return this.#getData<{ toolNames: string[] }>(response).toolNames;
+	}
+
 	// =========================================================================
 	// Helpers
 	// =========================================================================

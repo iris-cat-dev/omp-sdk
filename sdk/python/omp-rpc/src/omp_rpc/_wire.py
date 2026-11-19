@@ -797,6 +797,8 @@ class BashResult:
     artifact_error: JsonObject | None = None
     working_dir: str | None = None
     images: tuple[ImageContent, ...] | None = None
+    trace: JsonObject | None = None
+    """The embedded shell's final bounded ShellTrace when tracing was requested."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2278,6 +2280,7 @@ def parse_bash_result(value: object, path: str = "BashResult") -> BashResult:
         artifact_error=optional(payload, "artifactError", decode_json_object, path),
         working_dir=optional(payload, "workingDir", decode_str, path),
         images=optional(payload, "images", array(parse_image_content), path),
+        trace=optional(payload, "trace", decode_json_object, path),
     )
 
 
@@ -3676,6 +3679,12 @@ class WireClient:
         """Read the raw session tree."""
         params: dict[str, object] = {}
         return parse_session_tree(self._command("get_tree", params), "get_tree")
+
+    def set_active_tools(self, tools: Sequence[str] | None) -> tuple[str, ...]:
+        """Restrict active session tools to an allowlist, or pass null to restore the pre-override presentation."""
+        params: dict[str, object] = {}
+        params["tools"] = list(tools) if tools is not None else None
+        return required(expect_object(self._command("set_active_tools", params), "set_active_tools"), "toolNames", array(decode_str), "set_active_tools")
 
     def set_subagent_subscription(self, level: SubagentSubscriptionLevel) -> SubagentSubscriptionLevel:
         """Select which subagent frames are forwarded."""

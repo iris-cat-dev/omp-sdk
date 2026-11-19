@@ -3054,6 +3054,8 @@ type BashResult struct {
 	ArtifactError       map[string]json.RawMessage `json:"artifactError,omitempty"`
 	WorkingDir          *string                    `json:"workingDir,omitempty"`
 	Images              []ImageContent             `json:"images,omitempty"`
+	// The embedded shell's final bounded ShellTrace when tracing was requested.
+	Trace map[string]json.RawMessage `json:"trace,omitempty"`
 }
 
 func (v *BashResult) UnmarshalJSON(data []byte) error {
@@ -3077,6 +3079,7 @@ func (v *BashResult) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("artifactError", &out.ArtifactError)
 	d.optional("workingDir", &out.WorkingDir)
 	d.optional("images", &out.Images)
+	d.optional("trace", &out.Trace)
 	if d.err != nil {
 		return d.err
 	}
@@ -7772,6 +7775,25 @@ func (v *SetHostToolsResult) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type SetActiveToolsResult struct {
+	ToolNames []string `json:"toolNames"`
+}
+
+func (v *SetActiveToolsResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SetActiveToolsResult", v.decodeFrom)
+}
+
+func (v *SetActiveToolsResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SetActiveToolsResult
+	d := fieldDecoder{raw: raw, owner: "SetActiveToolsResult"}
+	d.required("toolNames", &out.ToolNames)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SetHostUriSchemesResult struct {
 	Schemes []string `json:"schemes"`
 }
@@ -8551,6 +8573,18 @@ type SetHostToolsCommand struct {
 func (c Commands) SetHostTools(ctx context.Context, p SetHostToolsCommand) ([]string, error) {
 	var out SetHostToolsResult
 	err := c.call(ctx, "set_host_tools", p, 0, &out)
+	return out.ToolNames, err
+}
+
+// SetActiveToolsCommand holds the parameters of "set_active_tools".
+type SetActiveToolsCommand struct {
+	Tools []string `json:"tools"`
+}
+
+// SetActiveTools sends "set_active_tools": Restrict active session tools to an allowlist, or pass null to restore the pre-override presentation.
+func (c Commands) SetActiveTools(ctx context.Context, p SetActiveToolsCommand) ([]string, error) {
+	var out SetActiveToolsResult
+	err := c.call(ctx, "set_active_tools", p, 0, &out)
 	return out.ToolNames, err
 }
 

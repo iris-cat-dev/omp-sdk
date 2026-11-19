@@ -370,5 +370,69 @@ for (const artifact of ["node", "node-desktop"]) {
 				for (const denied of scenario.denied) expect(names).not.toContain(denied);
 			});
 		}
+
+		test("set_active_tools restricts to read/glob/grep, blocks host-tool leak, and restores full presentation", async () => {
+			using root = TempDir.createSync("@node-rpc-set-active-tools-");
+			const options = {
+				cwd: root.path(),
+				agentDir: root.join("agent"),
+				model: "openai/gpt-4o-mini",
+				noSession: true,
+				extraArgs: ["--no-extensions", "--no-lsp", "--no-context-files", "--no-skills", "--no-rules"],
+			};
+			using client = new RpcClient({
+				command: () => [
+					"node",
+					"--input-type=module",
+					"-e",
+					`import { startNodeRpcHost } from ${JSON.stringify(pathToFileURL(entry).href)}; await startNodeRpcHost(${JSON.stringify(options)});`,
+				],
+				cwd: root.path(),
+				env: {
+					HOME: root.path(),
+					PI_CONFIG_DIR: ".omp",
+					PI_CODING_AGENT_DIR: root.join("agent"),
+					PI_PROFILE: "",
+					XDG_DATA_HOME: root.join("data"),
+					XDG_STATE_HOME: root.join("state"),
+					XDG_CACHE_HOME: root.join("cache"),
+					OPENAI_API_KEY: "test-no-network",
+				},
+			});
+			await client.start();
+			const makeHostTool = (name: string) => ({
+				name,
+				description: `Host tool ${name}`,
+				loadMode: "essential" as const,
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+				execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+			});
+			await client.setCustomTools([makeHostTool("host_ping")]);
+			const initialNames = (await client.getState()).dumpTools?.map(tool => tool.name) ?? [];
+			expect(initialNames).toEqual(
+				expect.arrayContaining(["read", "glob", "grep", "bash", "edit", "write", "host_ping"]),
+			);
+
+			const restricted = await client.setActiveTools(["read", "glob", "grep"]);
+			expect(restricted).toEqual(["read", "glob", "grep"]);
+			const restrictedDump = (await client.getState()).dumpTools?.map(tool => tool.name) ?? [];
+			expect(restrictedDump).toEqual(["read", "glob", "grep"]);
+
+			// Refreshing host tools while restricted must not leak them into the active toolset.
+			await client.setCustomTools([makeHostTool("host_pong")]);
+			const stillRestricted = (await client.getState()).dumpTools?.map(tool => tool.name) ?? [];
+			expect(stillRestricted).toEqual(["read", "glob", "grep"]);
+
+			// Restoring null brings back built-ins and the latest host tools.
+			const restored = await client.setActiveTools(null);
+			expect(restored).toEqual(
+				expect.arrayContaining(["read", "glob", "grep", "bash", "edit", "write", "host_pong"]),
+			);
+			expect(restored).not.toContain("host_ping");
+			const restoredDump = (await client.getState()).dumpTools?.map(tool => tool.name) ?? [];
+			expect(restoredDump).toEqual(
+				expect.arrayContaining(["read", "glob", "grep", "bash", "edit", "write", "host_pong"]),
+			);
+		}, 30_000);
 	});
 }

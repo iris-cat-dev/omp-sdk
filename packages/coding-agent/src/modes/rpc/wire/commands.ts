@@ -190,6 +190,13 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		unwrap: "toolNames",
 	},
 	{
+		name: "set_active_tools",
+		doc: "Restrict active session tools to an allowlist, or pass null to restore the pre-override presentation.",
+		params: { tools: "string[] | null" },
+		result: { toolNames: "string[]" },
+		unwrap: "toolNames",
+	},
+	{
 		name: "set_host_uri_schemes",
 		doc: "Replace the host-owned URI schemes.",
 		params: { schemes: "HostUriSchemeDefinition[]" },

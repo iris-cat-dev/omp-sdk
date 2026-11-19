@@ -3325,6 +3325,9 @@ pub struct BashResult {
 	pub working_dir: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub images: Option<Vec<ImageContent>>,
+	/// The embedded shell's final bounded ShellTrace when tracing was requested.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub trace: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5526,6 +5529,18 @@ pub struct SetHostToolsResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetActiveToolsParams {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub tools: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetActiveToolsResult {
+	#[serde(rename = "toolNames")]
+	pub tool_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetHostUriSchemesParams {
 	pub schemes: Vec<HostUriSchemeDefinition>,
 }
@@ -6928,6 +6943,23 @@ impl Command for SetHostToolsCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SetHostToolsResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.tool_names)
+	}
+}
+
+/// Restrict active session tools to an allowlist, or pass null to restore the pre-override presentation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SetActiveToolsCommand {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub tools: Option<Vec<String>>,
+}
+
+impl Command for SetActiveToolsCommand {
+	const NAME: &'static str = "set_active_tools";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = Vec<String>;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<SetActiveToolsResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.tool_names)
 	}
 }
 

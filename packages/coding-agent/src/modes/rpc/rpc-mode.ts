@@ -63,6 +63,7 @@ import { buildAvailableSlashCommands } from "../../slash-commands/available-comm
 import { listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
 import { cfgSttEnabled } from "../../stt/settings";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
+import { isMCPToolName } from "../../tools/builtin-names";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import { isApprovalMode } from "../../tools/approval";
 import type { EventBus } from "../../utils/event-bus";
@@ -1979,6 +1980,13 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	const emitAvailableCommandsUpdate = async () => {
 		output({ type: "available_commands_update", commands: await getAvailableCommands() });
 	};
+	let activeToolOverride: string[] | null = null;
+	let savedToolPresentation: { enabled: string[]; mounted: string[]; registered: string[] } | null = null;
+	let registeredHostToolNames = new Set<string>();
+	const clearActiveToolOverride = (): void => {
+		activeToolOverride = null;
+		savedToolPresentation = null;
+	};
 	session.subscribeCommandMetadataChanged(() => {
 		void emitAvailableCommandsUpdate();
 	});
@@ -2265,6 +2273,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					await goalController.settled();
 				}
 				if (!result.data.cancelled) {
+					clearActiveToolOverride();
 					inputGate.commitSessionChange(command);
 					// `branch` leaves a live run streaming to its normal yield; new/switch detach it.
 					if (command.type !== "branch" && command.type !== "fork") promptResults.abortOpen();
@@ -2547,9 +2556,62 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "set_host_tools": {
 				const tools = normalizeHostToolDefinitions(command.tools);
+				const previousHostToolNames = registeredHostToolNames;
 				const rpcTools = hostToolBridge.setTools(tools);
 				await session.refreshRpcHostTools(rpcTools);
+				registeredHostToolNames = new Set(tools.map(tool => tool.name));
+				if (activeToolOverride !== null) {
+					if (savedToolPresentation !== null) {
+						savedToolPresentation = {
+							enabled: [
+								...new Set([
+									...savedToolPresentation.enabled.filter(name => !previousHostToolNames.has(name)),
+									...rpcTools.filter(tool => !tool.hidden).map(tool => tool.name),
+								]),
+							],
+							mounted: savedToolPresentation.mounted.filter(name => !previousHostToolNames.has(name)),
+							registered: [...new Set([...savedToolPresentation.registered, ...registeredHostToolNames])],
+						};
+					}
+					await session.setActiveToolsByName(activeToolOverride);
+				}
 				return success(id, "set_host_tools", { toolNames: tools.map(tool => tool.name) });
+			}
+
+			case "set_active_tools": {
+				const requested = command.tools;
+				if (
+					requested !== null &&
+					(!Array.isArray(requested) ||
+						!requested.every(name => typeof name === "string" && name.trim().length > 0))
+				) {
+					return error(id, "set_active_tools", "tools must be null or an array of non-empty tool names");
+				}
+				if (requested === null) {
+					const saved = savedToolPresentation;
+					activeToolOverride = null;
+					savedToolPresentation = null;
+					if (saved !== null) {
+						await session.restoreNonMCPToolPresentation(saved.enabled, saved.mounted, saved.registered);
+					}
+					return success(id, "set_active_tools", { toolNames: session.getActiveToolNames() });
+				}
+				if (savedToolPresentation === null) {
+					savedToolPresentation = {
+						enabled: session.getEnabledToolNames().filter(name => !isMCPToolName(name)),
+						mounted: session.getMountedXdevToolNames().filter(name => !isMCPToolName(name)),
+						registered: session.getAllToolNames(),
+					};
+				}
+				const nextTools = requested.map(name => name.trim());
+				try {
+					await session.setActiveToolsByName(nextTools);
+					activeToolOverride = nextTools;
+				} catch (err) {
+					if (activeToolOverride === null) savedToolPresentation = null;
+					throw err;
+				}
+				return success(id, "set_active_tools", { toolNames: session.getActiveToolNames() });
 			}
 
 			case "live_start":

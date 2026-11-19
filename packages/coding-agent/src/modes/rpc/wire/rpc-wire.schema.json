@@ -307,6 +307,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "set_active_tools",
+				"doc": "Restrict active session tools to an allowlist, or pass null to restore the pre-override presentation.",
+				"params": "SetActiveToolsParams",
+				"result": "SetActiveToolsResult",
+				"nullable": false,
+				"unwrap": "toolNames",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "set_host_uri_schemes",
 				"doc": "Replace the host-owned URI schemes.",
 				"params": "SetHostUriSchemesParams",
@@ -6890,6 +6901,41 @@
 			]
 		},
 		"SetHostToolsResult": {
+			"type": "object",
+			"properties": {
+				"toolNames": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"toolNames"
+			]
+		},
+		"SetActiveToolsParams": {
+			"type": "object",
+			"properties": {
+				"tools": {
+					"anyOf": [
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"tools"
+			]
+		},
+		"SetActiveToolsResult": {
 			"type": "object",
 			"properties": {
 				"toolNames": {

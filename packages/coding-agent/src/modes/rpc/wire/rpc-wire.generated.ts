@@ -1756,6 +1756,14 @@ export interface SetHostToolsResult {
 	toolNames: string[];
 }
 
+export interface SetActiveToolsParams {
+	tools: string[] | null;
+}
+
+export interface SetActiveToolsResult {
+	toolNames: string[];
+}
+
 export interface SetHostUriSchemesParams {
 	schemes: HostUriSchemeDefinition[];
 }
@@ -2061,6 +2069,7 @@ export interface RpcWireCommands {
 	get_tree: { params: undefined; result: SessionTree };
 	set_todos: { params: SetTodosParams; result: SetTodosResult };
 	set_host_tools: { params: SetHostToolsParams; result: SetHostToolsResult };
+	set_active_tools: { params: SetActiveToolsParams; result: SetActiveToolsResult };
 	set_host_uri_schemes: { params: SetHostUriSchemesParams; result: SetHostUriSchemesResult };
 	set_subagent_subscription: { params: SetSubagentSubscriptionParams; result: SetSubagentSubscriptionResult };
 	set_event_filter: { params: SetEventFilterParams; result: SetEventFilterResult };
