@@ -166,3 +166,101 @@ it("keeps a dropped fork view readable but rejects rewritten, misidentified, or 
 		await fs.promises.rm(directory, { recursive: true, force: true });
 	}
 });
+
+it("caches an oversized cold entry transiently across interleaved synchronous scans and releases it after the microtask", async () => {
+	const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-indexed-oversized-"));
+	const file = path.join(directory, "oversized.jsonl");
+	try {
+		const header = `${JSON.stringify({ type: "session", version: 3, id: "oversized", timestamp: "2026-01-01T00:00:00Z", cwd: directory })}\n`;
+		const toolCallCount = 40;
+		const assistantEntry: SessionMessageEntry = {
+			type: "message",
+			id: "big-assistant",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:01Z",
+			message: {
+				role: "assistant",
+				api: "cursor-agent",
+				provider: "cursor",
+				model: "gemini-4-neon",
+				stopReason: "stop",
+				timestamp: 1,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				content: Array.from({ length: toolCallCount }, (_, index) => ({
+					type: "toolCall" as const,
+					id: `call-${index}`,
+					name: "read",
+					arguments: { path: `src/file-${index}.ts` },
+				})),
+				// Large enough that UTF-16 estimate exceeds the 64 KiB cache budget below.
+				providerPayload: {
+					type: "cursorHistory",
+					wireRoute: '["gemini-4-neon"]',
+					digest: "digest",
+					records: ["r".repeat(96 * 1024)],
+				},
+			},
+		};
+		const toolResults: SessionMessageEntry[] = Array.from({ length: toolCallCount }, (_, index) => ({
+			type: "message",
+			id: `res-${index}`,
+			parentId: index === 0 ? "big-assistant" : `res-${index - 1}`,
+			timestamp: "2026-01-01T00:00:02Z",
+			message: {
+				role: "toolResult",
+				toolCallId: `call-${index}`,
+				toolName: "read",
+				content: [{ type: "text", text: `output-${index}` }],
+				isError: false,
+				timestamp: 2 + index,
+			},
+		}));
+		await fs.promises.writeFile(
+			file,
+			header + [assistantEntry, ...toolResults].map(entry => `${JSON.stringify(entry)}\n`).join(""),
+		);
+
+		const journal = await IndexedSessionJournal.open(file);
+		const cache = new SessionEntryBodyCache(journal, () => {}, 64 * 1024);
+		const coldEntries = journal.entries.map(ref =>
+			cache.makeCold({ ...ref.metadata } as unknown as SessionMessageEntry, ref),
+		);
+		const coldAssistant = coldEntries[0] as SessionMessageEntry;
+		const coldResults = coldEntries.slice(1) as SessionMessageEntry[];
+
+		const before = journal.getStats();
+		// Interleave reading every toolCall on the oversized assistant with every small toolResult.
+		const calls = new Map<string, { name: string; arguments: Record<string, unknown> }>();
+		if (coldAssistant.message.role !== "assistant") throw new Error("Expected assistant");
+		for (const block of coldAssistant.message.content) {
+			if (block.type === "toolCall") calls.set(block.id, block);
+		}
+		for (const resultEntry of coldResults) {
+			if (resultEntry.message.role !== "toolResult") continue;
+			const paired = calls.get(resultEntry.message.toolCallId);
+			expect(paired?.name).toBe("read");
+			expect(paired?.arguments.path).toBe(`src/file-${resultEntry.message.toolCallId.slice(5)}.ts`);
+			expect(resultEntry.message.content[0]).toMatchObject({ type: "text" });
+		}
+		const after = journal.getStats();
+		// 1 read for the oversized assistant + 40 reads for the 40 distinct toolResults — never self-evicted.
+		expect(after.entryEntriesParsed - before.entryEntriesParsed).toBe(1 + toolCallCount);
+
+		// A same-tick commit() followed by another oversized read must still drain at the microtask boundary.
+		cache.commit();
+		void coldAssistant.message.content.length;
+		expect(cache.getStats().residentBodyBytes).toBeGreaterThan(64 * 1024);
+		await Promise.resolve();
+		expect(cache.getStats().residentBodyBytes).toBeLessThanOrEqual(64 * 1024);
+		expect(cache.getStats().overBudgetBytes).toBe(0);
+	} finally {
+		await fs.promises.rm(directory, { recursive: true, force: true });
+	}
+});

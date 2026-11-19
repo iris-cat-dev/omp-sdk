@@ -222,4 +222,62 @@ describe("read-only session blob hydration", () => {
 			readSpy.mockRestore();
 		}
 	});
+
+	it("does not read externalized Cursor server-record blobs for read-only transcripts", async () => {
+		using dir = TempDir.createSync("@read-only-cursor-history-");
+		const store = new BlobStore(path.join(dir.path(), "blobs"));
+		const recordsBlob = await store.put(Buffer.from(JSON.stringify(['{"role":"assistant","content":"hi"}']), "utf8"));
+		const assistantEntry: SessionMessageEntry = {
+			type: "message",
+			id: "cursor-asst",
+			parentId: null,
+			timestamp,
+			message: {
+				role: "assistant",
+				api: "cursor-agent",
+				provider: "cursor",
+				model: "gemini-4-neon",
+				stopReason: "stop",
+				timestamp: 1,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				content: [{ type: "text", text: "Visible summary" }],
+				providerPayload: {
+					type: "cursorHistory",
+					wireRoute: '["gemini-4-neon"]',
+					digest: "digest",
+					records: recordsBlob.ref as unknown as string[],
+				},
+			},
+		};
+		const file = path.join(dir.path(), "session.jsonl");
+		await Bun.write(file, [header, assistantEntry].map(value => JSON.stringify(value)).join("\n"));
+		const get = store.get.bind(store);
+		const reads: string[] = [];
+		const readSpy = spyOn(BlobStore.prototype, "get").mockImplementation(async hash => {
+			reads.push(hash);
+			return get(hash);
+		});
+		const syncReads: string[] = [];
+		const syncSpy = spyOn(BlobStore.prototype, "getSync").mockImplementation(hash => {
+			syncReads.push(hash);
+			return store.getSync(hash);
+		});
+		try {
+			const messages = await loadSessionMessagesReadOnly(file);
+			expect(reads).toEqual([]);
+			expect(syncReads).toEqual([]);
+			expect(messages).toHaveLength(1);
+			expect(messages[0]).toMatchObject({ role: "assistant", content: [{ type: "text", text: "Visible summary" }] });
+		} finally {
+			readSpy.mockRestore();
+			syncSpy.mockRestore();
+		}
+	});
 });

@@ -91,11 +91,12 @@ Key behaviors:
 
 1. **Large string truncation**: ordinary strings exceeding 500,000 characters are cut and suffixed with `"[Session persistence truncated large content]"`. Signed blocks, signature fields, redacted/encrypted reasoning, Anthropic server-tool history, and Anthropic compaction carriers are preserved verbatim for valid provider replay.
 2. **Duplicate/transient field stripping**: `jsonlEvents` is removed. OpenAI Responses thinking signatures already covered by the native provider payload are omitted from the persisted copy, as is MCP `structuredContent` whose rendered output was spilled to an artifact. In-memory entries remain intact.
-3. **Image externalization to blobs**:
+3. **Image and Cursor server-record externalization to blobs**:
    - image blocks in `content`, image payloads in `images[]`, snapcompact `frames[]`, and `image_generation_call.result` are externalized when not already blob refs and base64 length is at least threshold (`BLOB_EXTERNALIZE_THRESHOLD = 1024`),
    - provider-style `image_url` data URLs are externalized when they start with `data:image/` and contain `;base64,`,
+   - Cursor `cursorHistory` `providerPayload.records` arrays totaling at least `BLOB_EXTERNALIZE_THRESHOLD` characters are externalized as UTF-8 JSON (`records: "blob:sha256:<hash>"`), staying lazy on `SessionEntryBodyCache` loads until `.records` is actually read,
    - image block `data` is stored as decoded binary bytes,
-   - provider data URLs are stored as the original UTF-8 data URL string,
+   - provider data URLs and Cursor record arrays are stored as UTF-8 bytes,
    - persisted values are replaced with `blob:sha256:<hash>`.
 
 This keeps session JSONL compact while preserving recoverability.

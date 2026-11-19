@@ -20,6 +20,8 @@ import {
 	BlobStore,
 	isBlobRef,
 	lazyImageDataSync,
+	resolveCursorHistoryRecords,
+	resolveCursorHistoryRecordsSync,
 	resolveImageData,
 	resolveImageDataSync,
 	resolveImageDataUrl,
@@ -36,7 +38,13 @@ import {
 import { migrateToCurrentVersion } from "./session-migrations";
 import { IndexedSessionJournal, SessionEntryBodyCache } from "./indexed-session-journal";
 import { sanitizeRehydratedOpenAIResponsesAssistantMessage } from "./messages";
-import { isExternalizableImagePosition, isPersistenceTruncatedString } from "./session-persistence";
+import {
+	clearLazyCursorHistoryBlobRef,
+	getLazyCursorHistoryBlobRef,
+	isExternalizableImagePosition,
+	isPersistenceTruncatedString,
+	setLazyCursorHistoryBlobRef,
+} from "./session-persistence";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
 import { enotdir } from "./session-storage-errors";
 import {
@@ -568,12 +576,15 @@ export async function loadSessionFile(
 			const journal = await IndexedSessionJournal.open(filePath);
 			if (journal.header?.version === CURRENT_SESSION_VERSION && !journal.invalidHeader) {
 				const blobs = new BlobStore(getBlobsDir());
-				const bodyCache = new SessionEntryBodyCache(journal, entry => {
+				const bodyCache = new SessionEntryBodyCache(journal, (entry, onBodyExpanded) => {
 					if (entry.type === "message" && entry.message.role === "assistant") {
 						normalizeAssistantUsage(entry.message);
 						entry.message = sanitizeRehydratedOpenAIResponsesAssistantMessage(entry.message);
 					}
-					resolveBlobRefsInEntriesSync([entry], blobs);
+					resolveBlobRefsInEntriesSync([entry], blobs, {
+						lazyCursorHistory: true,
+						onLazyResolve: onBodyExpanded,
+					});
 				});
 				const entries: FileEntry[] = [journal.header];
 				for (const ref of journal.entries)
@@ -669,17 +680,64 @@ interface BlobRefSite {
 	holder: Record<string, unknown>;
 	key: string;
 	ref: string;
-	/** Provider image URLs persist the whole data URL; image payloads persist bare base64. */
-	asDataUrl: boolean;
+	/** Provider image URLs persist data URLs; image payloads persist bare base64; Cursor history persists JSON string[]. */
+	kind: "base64" | "dataUrl" | "cursorHistoryRecords";
+}
+
+export interface ResolveBlobRefsSyncOptions {
+	/** Defer reading externalized `cursorHistory.records` blobs until `.records` is actually accessed. */
+	lazyCursorHistory?: boolean;
+	/** Invoked once a lazy blob accessor hydrates its payload in place (for cache byte accounting). */
+	onLazyResolve?: () => void;
+}
+
+function installLazyCursorHistoryRecords(
+	payload: Record<string, unknown>,
+	ref: string,
+	blobStore: BlobStore,
+	onResolve?: () => void,
+): void {
+	if (getLazyCursorHistoryBlobRef(payload) === ref) return;
+	setLazyCursorHistoryBlobRef(payload, ref);
+	let resolved: string[] | string | undefined;
+	Object.defineProperty(payload, "records", {
+		enumerable: true,
+		configurable: true,
+		get() {
+			if (resolved === undefined) {
+				resolved = resolveCursorHistoryRecordsSync(blobStore, ref);
+				Object.defineProperty(payload, "records", {
+					value: resolved,
+					enumerable: true,
+					configurable: true,
+					writable: true,
+				});
+				clearLazyCursorHistoryBlobRef(payload);
+				onResolve?.();
+			}
+			return resolved;
+		},
+		set(value: unknown) {
+			Object.defineProperty(payload, "records", {
+				value,
+				enumerable: true,
+				configurable: true,
+				writable: true,
+			});
+			clearLazyCursorHistoryBlobRef(payload);
+			onResolve?.();
+		},
+	});
 }
 
 /**
- * Collect the blob references in session image blocks and provider image URLs.
+ * Collect the blob references in session image blocks, provider image URLs, and
+ * externalized Cursor server-record payloads.
  * Snapcompact frames stay as references until context rebuilding selects them.
  */
 function collectBlobRefSites(value: unknown, sites: BlobRefSite[], key?: string): void {
 	if (key !== "frames" && isExternalizableImagePosition(value, key) && isBlobRef(value.data)) {
-		sites.push({ holder: value, key: "data", ref: value.data, asDataUrl: false });
+		sites.push({ holder: value, key: "data", ref: value.data, kind: "base64" });
 		return;
 	}
 
@@ -690,12 +748,21 @@ function collectBlobRefSites(value: unknown, sites: BlobRefSite[], key?: string)
 
 	if (typeof value !== "object" || value === null) return;
 	const holder = value as Record<string, unknown>;
+	const lazyCursorRef = getLazyCursorHistoryBlobRef(holder);
+	if (lazyCursorRef !== undefined) {
+		sites.push({ holder, key: "records", ref: lazyCursorRef, kind: "cursorHistoryRecords" });
+		return;
+	}
+	if (holder.type === "cursorHistory" && typeof holder.records === "string" && isBlobRef(holder.records)) {
+		sites.push({ holder, key: "records", ref: holder.records, kind: "cursorHistoryRecords" });
+		return;
+	}
 	if (holder.type === "image_generation_call" && typeof holder.result === "string" && isBlobRef(holder.result)) {
-		sites.push({ holder, key: "result", ref: holder.result, asDataUrl: false });
+		sites.push({ holder, key: "result", ref: holder.result, kind: "base64" });
 	}
 
 	if (hasImageUrl(value) && isBlobRef(value.image_url)) {
-		sites.push({ holder, key: "image_url", ref: value.image_url, asDataUrl: true });
+		sites.push({ holder, key: "image_url", ref: value.image_url, kind: "dataUrl" });
 	}
 
 	for (const childKey in holder) collectBlobRefSites(holder[childKey], sites, childKey);
@@ -716,6 +783,7 @@ function containsBlobRef(value: unknown): boolean {
 		return false;
 	}
 	if (typeof value !== "object" || value === null) return false;
+	if (getLazyCursorHistoryBlobRef(value) !== undefined) return true;
 	for (const key in value) {
 		if (containsBlobRef((value as Record<string, unknown>)[key])) return true;
 	}
@@ -752,12 +820,12 @@ function blobRefSites(values: readonly unknown[]): BlobRefSite[] {
 }
 
 function blobSiteKey(site: BlobRefSite): string {
-	return `${site.asDataUrl ? "url" : "base64"}:${site.ref}`;
+	return `${site.kind}:${site.ref}`;
 }
 
 async function resolveBlobRefs(values: readonly unknown[], blobStore: BlobStore): Promise<void> {
 	const semaphore = new Semaphore(BLOB_READ_CONCURRENCY);
-	const resolved = new Map<string, Promise<string>>();
+	const resolved = new Map<string, Promise<string | string[]>>();
 	await Promise.all(
 		blobRefSites(values).map(async site => {
 			const key = blobSiteKey(site);
@@ -766,16 +834,18 @@ async function resolveBlobRefs(values: readonly unknown[], blobStore: BlobStore)
 				data = (async () => {
 					await semaphore.acquire();
 					try {
-						return await (site.asDataUrl
-							? resolveImageDataUrl(blobStore, site.ref)
-							: resolveImageData(blobStore, site.ref));
+						if (site.kind === "dataUrl") return await resolveImageDataUrl(blobStore, site.ref);
+						if (site.kind === "cursorHistoryRecords")
+							return await resolveCursorHistoryRecords(blobStore, site.ref);
+						return await resolveImageData(blobStore, site.ref);
 					} finally {
 						semaphore.release();
 					}
 				})();
 				resolved.set(key, data);
 			}
-			site.holder[site.key] = await data;
+			const value = await data;
+			site.holder[site.key] = Array.isArray(value) ? value.slice() : value;
 		}),
 	);
 }
@@ -793,18 +863,26 @@ export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: 
 }
 
 /** Synchronous {@link resolveBlobRefsInEntries}. */
-export function resolveBlobRefsInEntriesSync(entries: FileEntry[], blobStore: BlobStore): void {
-	const resolved = new Map<string, string>();
+export function resolveBlobRefsInEntriesSync(
+	entries: FileEntry[],
+	blobStore: BlobStore,
+	options?: ResolveBlobRefsSyncOptions,
+): void {
+	const resolved = new Map<string, string | string[]>();
 	for (const site of blobRefSites(entriesForBlobResolution(entries))) {
+		if (site.kind === "cursorHistoryRecords" && options?.lazyCursorHistory) {
+			installLazyCursorHistoryRecords(site.holder, site.ref, blobStore, options.onLazyResolve);
+			continue;
+		}
 		const key = blobSiteKey(site);
 		let data = resolved.get(key);
 		if (data === undefined) {
-			data = site.asDataUrl
-				? resolveImageDataUrlSync(blobStore, site.ref)
-				: resolveImageDataSync(blobStore, site.ref);
+			if (site.kind === "dataUrl") data = resolveImageDataUrlSync(blobStore, site.ref);
+			else if (site.kind === "cursorHistoryRecords") data = resolveCursorHistoryRecordsSync(blobStore, site.ref);
+			else data = resolveImageDataSync(blobStore, site.ref);
 			resolved.set(key, data);
 		}
-		site.holder[site.key] = data;
+		site.holder[site.key] = Array.isArray(data) ? data.slice() : data;
 	}
 }
 
@@ -831,12 +909,13 @@ export async function loadSessionMessagesReadOnly(filePath: string): Promise<Age
 		collapseCompactedHistory: true,
 		resolveFrameData: data => lazyImageDataSync(blobs, data),
 	});
-	// A collapsed summary carries the remote-compaction replacement history for
-	// provider replay only; this transcript is never replayed, and the renderer
-	// reads just the summary. Dropping it keeps hydration off every image blob
-	// buried in that hidden history.
+	// A collapsed summary carries the remote-compaction replacement history and
+	// Cursor assistant turns carry raw server records for provider replay only;
+	// this transcript is never replayed, and the renderer reads just the visible
+	// content. Dropping them keeps hydration off hidden/replay-only blobs.
 	const displayMessages = messages.map(message =>
-		message.role === "compactionSummary" && message.providerPayload !== undefined
+		(message.role === "compactionSummary" && message.providerPayload !== undefined) ||
+		(message.role === "assistant" && message.providerPayload?.type === "cursorHistory")
 			? { ...message, providerPayload: undefined }
 			: message,
 	);

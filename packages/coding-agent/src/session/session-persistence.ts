@@ -3,6 +3,7 @@ import { countNewlines, isRecord } from "@oh-my-pi/pi-utils";
 import { PRESERVE_KEY as SNAPCOMPACT_PRESERVE_KEY } from "@oh-my-pi/snapcompact";
 import {
 	type BlobStore,
+	externalizeCursorHistoryRecordsSync,
 	externalizeImageDataSync,
 	externalizeImageDataUrlSync,
 	isBlobRef,
@@ -128,6 +129,77 @@ function externalizeImagePayloadSync(
 	return ref;
 }
 
+interface ExternalizedCursorHistory {
+	readonly records: readonly string[];
+	readonly length: number;
+	readonly digest: string;
+	readonly first: string | undefined;
+	readonly last: string | undefined;
+	readonly ref: string;
+}
+
+const externalizedCursorHistoryRefs = new WeakMap<BlobStore, WeakMap<object, ExternalizedCursorHistory>>();
+const lazyCursorHistoryRefs = new WeakMap<object, string>();
+
+/** Record an un-hydrated blob reference installed behind a lazy `cursorHistory.records` getter. */
+export function setLazyCursorHistoryBlobRef(payload: object, ref: string): void {
+	lazyCursorHistoryRefs.set(payload, ref);
+}
+
+/** Clear the lazy blob marker once `cursorHistory.records` has been hydrated or overwritten. */
+export function clearLazyCursorHistoryBlobRef(payload: object): void {
+	lazyCursorHistoryRefs.delete(payload);
+}
+
+/** Return the un-hydrated blob reference backing a lazy `cursorHistory.records` getter, if any. */
+export function getLazyCursorHistoryBlobRef(payload: object): string | undefined {
+	return lazyCursorHistoryRefs.get(payload);
+}
+
+function shouldExternalizeCursorHistory(
+	value: unknown,
+): value is Record<string, unknown> & { type: "cursorHistory"; digest?: string; records: string[] } {
+	if (!isRecord(value) || value.type !== "cursorHistory") return false;
+	if (lazyCursorHistoryRefs.has(value)) return false;
+	const records = value.records;
+	if (!Array.isArray(records) || records.length === 0) return false;
+	let totalChars = 0;
+	for (const record of records) {
+		if (typeof record !== "string") return false;
+		totalChars += record.length;
+	}
+	return totalChars >= BLOB_EXTERNALIZE_THRESHOLD;
+}
+
+function externalizeCursorHistoryPayloadSync(
+	blobStore: BlobStore,
+	payload: Record<string, unknown> & { digest?: string; records: string[] },
+): string {
+	const records = payload.records;
+	const digest = typeof payload.digest === "string" ? payload.digest : "";
+	const first = records[0];
+	const last = records[records.length - 1];
+	let refs = externalizedCursorHistoryRefs.get(blobStore);
+	const cached = refs?.get(payload);
+	if (
+		cached &&
+		cached.records === records &&
+		cached.length === records.length &&
+		cached.digest === digest &&
+		cached.first === first &&
+		cached.last === last
+	) {
+		return cached.ref;
+	}
+	const ref = externalizeCursorHistoryRecordsSync(blobStore, records);
+	if (!refs) {
+		refs = new WeakMap();
+		externalizedCursorHistoryRefs.set(blobStore, refs);
+	}
+	refs.set(payload, { records, length: records.length, digest, first, last, ref });
+	return ref;
+}
+
 /**
  * Drop every image ref remembered for `blobStore`, so the next persist checks
  * each blob on disk again. Call when a session write failed: a ref whose line
@@ -135,6 +207,7 @@ function externalizeImagePayloadSync(
  */
 export function forgetExternalizedImages(blobStore: BlobStore): void {
 	externalizedImageRefs.delete(blobStore);
+	externalizedCursorHistoryRefs.delete(blobStore);
 }
 
 /** True for the snapcompact archive slot, `preserveData[PRESERVE_KEY]`. */
@@ -228,17 +301,34 @@ function truncateForPersistence(
 			if (isAnthropicServerToolHistoryBlock(validationView)) return obj;
 		}
 	}
+	// Cursor server records are addressed by the SHA-256 of their bytes and carry
+	// signed reasoning, so they must persist byte-exact. Externalize multi-KB
+	// record arrays to the content-addressed blob store so session JSONL lines
+	// stay small and cold-body reads for pruning/display skip multi-MB payloads.
+	if (typeof obj === "object" && obj !== null && "type" in obj && obj.type === "cursorHistory") {
+		const lazyRef = lazyCursorHistoryRefs.get(obj);
+		if (lazyRef !== undefined) {
+			const rest: Record<string, unknown> = {};
+			for (const childKey of Object.keys(obj)) {
+				if (childKey === "records") rest.records = lazyRef;
+				else rest[childKey] = (obj as Record<string, unknown>)[childKey];
+			}
+			return rest;
+		}
+		if (shouldExternalizeCursorHistory(obj)) {
+			return { ...obj, records: externalizeCursorHistoryPayloadSync(blobStore, obj) };
+		}
+		return obj;
+	}
 	// Anthropic server-side compaction replay state: `encrypted_content` is
 	// opaque provider state the API validates byte-for-byte on replay, so the
 	// carrier persists atomically with its summary and metadata — both as a
 	// message `providerPayload` (`type: "anthropicCompaction"`) and under the
 	// preserveData slot, whose object carries no `type` marker of its own.
-	// Cursor server records are addressed by the SHA-256 of their bytes and carry
-	// signed reasoning, so they persist atomically too.
 	if (
 		typeof obj === "object" &&
 		obj !== null &&
-		(("type" in obj && (obj.type === "anthropicCompaction" || obj.type === "cursorHistory")) ||
+		(("type" in obj && obj.type === "anthropicCompaction") ||
 			(key === "anthropicCompaction" && "content" in obj && typeof obj.content === "string"))
 	) {
 		return obj;
@@ -373,6 +463,9 @@ function persistenceNodeNeedsRewrite(obj: unknown, key?: string, maxStringChars 
 				typed.result.length >= BLOB_EXTERNALIZE_THRESHOLD
 			) {
 				return true;
+			}
+			if (typed.type === "cursorHistory") {
+				return lazyCursorHistoryRefs.has(typed) || shouldExternalizeCursorHistory(typed);
 			}
 		}
 		if (shouldExternalizeImagePayload(obj, key)) return true;

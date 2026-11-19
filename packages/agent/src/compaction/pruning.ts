@@ -319,16 +319,16 @@ function resolveBoundaryIndex(entries: readonly SessionEntry[], keepBoundaryId: 
 class SentToolCalls {
 	readonly #entries: readonly SessionEntry[];
 	readonly #start: number;
-	readonly #sent: Map<string, AgentToolCall>;
+	#sent: Map<string, AgentToolCall> | undefined;
 	#prefix: Map<string, AgentToolCall> | undefined;
 
 	constructor(entries: readonly SessionEntry[], start: number) {
 		this.#entries = entries;
 		this.#start = start;
-		this.#sent = collectToolCallsById(entries, start);
 	}
 
 	get(id: string): AgentToolCall | undefined {
+		this.#sent ??= collectToolCallsById(this.#entries, this.#start);
 		const call = this.#sent.get(id);
 		if (call !== undefined || this.#start === 0) return call;
 		this.#prefix ??= collectToolCallsById(this.#entries, 0, this.#start);

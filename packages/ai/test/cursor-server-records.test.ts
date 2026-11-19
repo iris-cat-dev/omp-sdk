@@ -1223,4 +1223,33 @@ describe("Cursor server records", () => {
 		expect(assistant.providerPayload).toBeUndefined();
 		expect(records.filter(record => written.includes(record))).toEqual([]);
 	});
+
+	it("rebuilds from content when a persisted cursorHistory payload has an unresolved blob reference instead of records", async () => {
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "Recovered answer" }],
+			api: "cursor-agent",
+			provider: "cursor",
+			model: "composer-2.5",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			providerPayload: {
+				type: "cursorHistory",
+				wireRoute: '["composer-2.5","composer-2.5",false,false,[]]',
+				digest: "stale-or-matching",
+				records: `blob:sha256:${"0".repeat(64)}` as unknown as string[],
+			},
+			timestamp: 2,
+		};
+
+		const { records } = await rootPromptIds(model("composer-2.5"), [firstUser, assistant, secondUser]);
+		expect(records.some(record => record.includes("Recovered answer"))).toBe(true);
+	});
 });

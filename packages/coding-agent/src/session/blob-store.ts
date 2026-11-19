@@ -436,3 +436,49 @@ export function lazyImageDataSync(blobStore: BlobStore, data: string): LazyFrame
 	}
 	return { bytes: Math.ceil(size / 3) * 4, read: () => resolveImageDataSync(blobStore, data) };
 }
+
+/**
+ * Externalize a Cursor server-record array to the blob store as UTF-8 JSON so
+ * multi-megabyte replay payloads stay out of session JSONL lines while preserving
+ * exact record bytes for Cursor's SHA-256 content addressing.
+ */
+export function externalizeCursorHistoryRecordsSync(blobStore: BlobStore, records: readonly string[]): string {
+	return blobStore.putSync(Buffer.from(JSON.stringify(records), "utf8")).ref;
+}
+
+function parseCursorHistoryRecordsBlob(buffer: Buffer, hash: string): string[] | null {
+	try {
+		const parsed: unknown = JSON.parse(buffer.toString("utf8"));
+		if (Array.isArray(parsed) && parsed.every(item => typeof item === "string")) return parsed;
+	} catch {
+		// Fall through to warning.
+	}
+	logger.warn("Invalid persisted Cursor history records blob", { hash });
+	return null;
+}
+
+/** Resolve an externalized Cursor history records blob reference back to its string array. */
+export async function resolveCursorHistoryRecords(blobStore: BlobStore, data: string): Promise<string[] | string> {
+	const hash = parseBlobRef(data);
+	if (!hash) return data;
+
+	const buffer = await blobStore.get(hash);
+	if (!buffer) {
+		logger.warn("Blob not found for persisted Cursor history records", { hash });
+		return data;
+	}
+	return parseCursorHistoryRecordsBlob(buffer, hash) ?? data;
+}
+
+/** Synchronous variant of {@link resolveCursorHistoryRecords}. */
+export function resolveCursorHistoryRecordsSync(blobStore: BlobStore, data: string): string[] | string {
+	const hash = parseBlobRef(data);
+	if (!hash) return data;
+
+	const buffer = blobStore.getSync(hash);
+	if (!buffer) {
+		logger.warn("Blob not found for persisted Cursor history records", { hash });
+		return data;
+	}
+	return parseCursorHistoryRecordsBlob(buffer, hash) ?? data;
+}

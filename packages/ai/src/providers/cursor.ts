@@ -6424,6 +6424,7 @@ function resolveCursorRecordReplays(
 			promptInBlock = false;
 		}
 		if (msg.role !== "assistant" || msg.providerPayload?.type !== "cursorHistory") continue;
+		if (!Array.isArray(msg.providerPayload.records) || msg.providerPayload.records.length === 0) continue;
 		if (msg.api !== "cursor-agent" || msg.provider !== provider || msg.model !== modelId) continue;
 		if (msg.providerPayload.wireRoute !== wireRoute) continue;
 		if (cursorTurnDigest({ userMessage, content: msg.content, toolResults }) !== msg.providerPayload.digest) {

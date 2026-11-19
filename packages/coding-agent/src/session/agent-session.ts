@@ -5045,6 +5045,7 @@ export class AgentSession implements SettingsScope {
 							? "successful-yield-active-goal-checkCompaction"
 							: "post-yield-trailing-stop-active-goal-checkCompaction",
 					);
+					await this.#messageEndPersistenceTail;
 					const compactionTask = this.#maintenance.checkCompaction(successfulYieldMessage);
 					this.#trackPostPromptTask(compactionTask);
 					await compactionTask;
@@ -5127,6 +5128,7 @@ export class AgentSession implements SettingsScope {
 					}
 				}
 				maintenanceRoute("active-goal-pre-empt-checkCompaction");
+				await this.#messageEndPersistenceTail;
 				const compactionTask = this.#maintenance.checkCompaction(msg);
 				this.#trackPostPromptTask(compactionTask);
 				compactionResult = await compactionTask;
@@ -5258,6 +5260,9 @@ export class AgentSession implements SettingsScope {
 
 			if (!checkedCompaction) {
 				maintenanceRoute("bottom-checkCompaction");
+				// Wait for queued message_end appends (e.g. Cursor's burst of split
+				// toolResults) so pruning and compaction see the complete branch.
+				await this.#messageEndPersistenceTail;
 				const compactionTask = this.#maintenance.checkCompaction(msg);
 				this.#trackPostPromptTask(compactionTask);
 				compactionResult = await compactionTask;

@@ -1097,4 +1097,37 @@ describe("warm-cache guard — prompt-cache lookback window", () => {
 			expect(resultText(stale)).toBe(SUPERSEDED_NOTICE);
 		}
 	});
+
+	test("pruneToolOutputs skips scanning older assistant tool calls outside the warm-cache suffix", () => {
+		let olderAssistantContentReads = 0;
+		const olderAssistant = assistantMessage(
+			[{ type: "toolCall", id: "old-call", name: "read", arguments: { path: "old.ts" } }],
+			T0,
+		);
+		const rawContent = olderAssistant.content;
+		Object.defineProperty(olderAssistant, "content", {
+			enumerable: true,
+			configurable: true,
+			get() {
+				olderAssistantContentReads++;
+				return rawContent;
+			},
+		});
+		const entries: SessionEntry[] = [
+			messageEntry(olderAssistant, T0),
+			messageEntry(toolResultMessage("read", "old-call", "x".repeat(400), T0), T0),
+			messageEntry(
+				assistantMessage([{ type: "toolCall", id: "recent-call", name: "bash", arguments: {} }], T0 + 1_000),
+				T0 + 1_000,
+			),
+			// Exceeds cacheWarmSuffixTokens (16_000) so the backward loop breaks before reaching olderAssistant.
+			messageEntry(toolResultMessage("bash", "recent-call", "y".repeat(80_000), T0 + 1_000), T0 + 1_000),
+		];
+		const result = pruneToolOutputs(entries, tokenizer, {
+			...DEFAULT_PRUNE_CONFIG,
+			cacheWarmSuffixTokens: 16_000,
+		});
+		expect(result.prunedCount).toBe(0);
+		expect(olderAssistantContentReads).toBe(0);
+	});
 });

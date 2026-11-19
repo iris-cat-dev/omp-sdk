@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage, CursorHistoryPayload, ImageContent } from "@oh-my-pi/pi-ai";
+import { BlobStore } from "@oh-my-pi/pi-coding-agent/session/blob-store";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getBlobsDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -448,7 +449,7 @@ describe("SessionManager signature persistence", () => {
 		await reloaded.close();
 	}, 15_000);
 
-	it("preserves oversized Cursor server records byte-for-byte across reload", async () => {
+	it("externalizes oversized Cursor server records to blobs, keeps them lazy until replay, and preserves them byte-for-byte", async () => {
 		using tempDir = TempDir.createSync("@pi-session-cursor-records-persistence-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
 		// >MAX_PERSIST_CHARS: Cursor addresses each record by the SHA-256 of its bytes.
@@ -494,10 +495,40 @@ describe("SessionManager signature persistence", () => {
 		await session.flush();
 		const sessionFile = session.getSessionFile();
 		if (!sessionFile) throw new Error("Expected persisted session file");
+		const expectedHash = new Bun.SHA256().update(Buffer.from(JSON.stringify([record]), "utf8")).digest("hex");
+		const rawOnDisk = await fs.readFile(sessionFile, "utf8");
+		// The JSONL line stores a compact blob ref instead of inlining the 600 KB record.
+		expect(rawOnDisk).toContain(`blob:sha256:${expectedHash}`);
+		expect(rawOnDisk.split(output).length - 1).toBe(1); // Only in the toolResult, not duplicated in cursorHistory.
+		await expect(fs.readFile(path.join(getBlobsDir(), expectedHash), "utf8")).resolves.toBe(JSON.stringify([record]));
 		await session.close();
 
 		const reloaded = await SessionManager.open(sessionFile);
-		expect(getAssistantMessage(reloaded).providerPayload).toEqual(providerPayload);
+		const getSyncSpy = spyOn(BlobStore.prototype, "getSync");
+		try {
+			// Inspecting assistant content (e.g. pruning) and building a display transcript must NOT hydrate the Cursor blob.
+			const assistant = getAssistantMessage(reloaded);
+			expect(assistant.content).toEqual([
+				{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "/tmp/big.txt" } },
+			]);
+			expect(assistant.providerPayload?.type).toBe("cursorHistory");
+			const transcript = reloaded.buildSessionContext({ transcript: true });
+			expect(transcript.messages.some(message => message.role === "assistant")).toBe(true);
+			expect(getSyncSpy).not.toHaveBeenCalled();
+
+			// Rewriting entries (including a pinned edit on content) must preserve the blob ref without hydrating it.
+			await reloaded.rewriteEntries();
+			expect(getSyncSpy).not.toHaveBeenCalled();
+
+			// Reading providerPayload.records / building LLM context hydrates the exact records byte-for-byte once.
+			const llmContext = reloaded.buildSessionContext();
+			const llmAssistant = llmContext.messages.find(message => message.role === "assistant");
+			expect(llmAssistant?.role === "assistant" ? llmAssistant.providerPayload : undefined).toEqual(providerPayload);
+			expect(getSyncSpy).toHaveBeenCalledTimes(1);
+			expect(getAssistantMessage(reloaded).providerPayload).toEqual(providerPayload);
+		} finally {
+			getSyncSpy.mockRestore();
+		}
 		// Keep the paired result byte-identical to the native-history record so
 		// replay retains the provider's content-addressed history.
 		const result = reloaded

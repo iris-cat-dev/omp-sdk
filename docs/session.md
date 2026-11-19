@@ -566,6 +566,7 @@ Before persisting entries:
 - Transient `jsonlEvents` is removed.
 - If an object has both string `content` and numeric `lineCount`, line count is recomputed after truncation.
 - Image data URLs in `image_url` fields are always content-addressed in the blob store and replaced with `blob:sha256:<hash>`, regardless of length. Base64 payloads at least 1,024 characters are externalized in image `content` blocks, `images[]`, snapcompact `frames[]`, and image-generation results.
+- Cursor `cursorHistory` server-record arrays totaling at least 1,024 characters are externalized as UTF-8 JSON to the blob store (`records: "blob:sha256:<hash>"`). On lazy file loads they stay unhydrated until `providerPayload.records` is accessed for replay, keeping pruning and display transcripts off multi-megabyte replay blobs.
 - Redundant OpenAI Responses `thinkingSignature` copies are omitted when the authoritative reasoning item already exists in `providerPayload`.
 - Spilled MCP tool results omit duplicate `details.structuredContent` when the rendered structured output already lives in their truncation artifact.
 

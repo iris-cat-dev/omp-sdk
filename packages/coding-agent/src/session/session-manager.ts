@@ -1579,8 +1579,11 @@ export class SessionManager {
 		if (!(this.#storage instanceof FileSessionStorage) || !this.#sessionFile || this.#entriesReleased) return;
 		if (!this.#journal) {
 			this.#journal = new IndexedSessionJournal(this.#liveRelocationWritePath() ?? this.#sessionFile);
-			this.#bodyCache = new SessionEntryBodyCache(this.#journal, entry =>
-				resolveBlobRefsInEntriesSync([entry], this.#blobs),
+			this.#bodyCache = new SessionEntryBodyCache(this.#journal, (entry, onBodyExpanded) =>
+				resolveBlobRefsInEntriesSync([entry], this.#blobs, {
+					lazyCursorHistory: true,
+					onLazyResolve: onBodyExpanded,
+				}),
 			);
 			this.#bodyCache.onMutation = this.#markColdBodyMutation;
 		}
@@ -4089,8 +4092,14 @@ export class SessionManager {
 			...options,
 		});
 		// Providers own the selected context's containers, not cache mutation proxies.
+		// Transcript views are display-only and never replay to Cursor, so skip
+		// hydrating multi-megabyte Cursor server-record blobs when cloning them.
 		context.messages = context.messages.map(message => {
-			const detached = cloneJsonTree(message);
+			const source =
+				options?.transcript && message.role === "assistant" && message.providerPayload?.type === "cursorHistory"
+					? { ...message, providerPayload: undefined }
+					: message;
+			const detached = cloneJsonTree(source);
 			copyPersistedSessionEntryId(detached, message);
 			return detached;
 		});

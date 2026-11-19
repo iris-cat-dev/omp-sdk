@@ -475,8 +475,11 @@ export function estimateSessionValueBytes(value: unknown): number {
 	if (typeof value === "string") return 32 + value.length * 2;
 	if (typeof value !== "object" || value === null) return 8;
 	let bytes = Array.isArray(value) ? 64 : 96;
-	for (const key of Object.keys(value))
-		bytes += 32 + key.length * 2 + estimateSessionValueBytes((value as Record<string, unknown>)[key]);
+	for (const key of Object.keys(value)) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		// Un-triggered lazy accessors (e.g. externalized Cursor history blobs) hold no resident body yet.
+		bytes += 32 + key.length * 2 + (descriptor?.get ? 64 : estimateSessionValueBytes(descriptor?.value));
+	}
 	return bytes;
 }
 const indexedTaskUsage = new WeakMap<object, { usage?: unknown }>();
@@ -500,6 +503,8 @@ interface ColdHandle {
 	pinned?: ColdBody;
 	message?: object;
 }
+/** Maximum oversized bodies (> maxBytes) kept transiently within one synchronous turn to prevent self-eviction thrashing. */
+const MAX_TRANSIENT_OVERSIZED = 2;
 /** Sync-compatible bodies: only the bounded LRU and uncommitted edits own full payloads.
  * Borrowed containers are stable path views, not weak references to hydrated bodies:
  * WeakRef construction/deref would otherwise retain every body until the current job ends.
@@ -508,6 +513,7 @@ export class SessionEntryBodyCache {
 	readonly journal: IndexedSessionJournal;
 	readonly maxBytes: number;
 	#cache = new Map<ColdHandle, ColdBody>();
+	#oversized = new Map<ColdHandle, ColdBody>();
 	#handles = new WeakMap<object, ColdHandle>();
 	#pinned = new Set<ColdHandle>();
 	#borrowed = new Map<ColdHandle, Set<WeakRef<object>>>();
@@ -526,8 +532,14 @@ export class SessionEntryBodyCache {
 			held.parent?.children?.delete(held.key);
 	});
 	#residentBytes = 0;
-	#hydrate: (entry: FileEntry) => void;
-	constructor(journal: IndexedSessionJournal, hydrate: (entry: FileEntry) => void, maxBytes = 8 * 1024 * 1024) {
+	#oversizedBytes = 0;
+	#oversizedDrainScheduled = false;
+	#hydrate: (entry: FileEntry, onBodyExpanded?: () => void) => void;
+	constructor(
+		journal: IndexedSessionJournal,
+		hydrate: (entry: FileEntry, onBodyExpanded?: () => void) => void,
+		maxBytes = 8 * 1024 * 1024,
+	) {
 		this.journal = journal;
 		this.maxBytes = maxBytes;
 		this.#hydrate = hydrate;
@@ -557,16 +569,17 @@ export class SessionEntryBodyCache {
 				this.#borrowed.delete(handle);
 				continue;
 			}
-			if (!this.#cache.has(handle) && !handle.pinned) borrowedEntries++;
+			if (!this.#cache.has(handle) && !this.#oversized.has(handle) && !handle.pinned) borrowedEntries++;
 		}
-		const residentBodyBytes = this.#residentBytes + pinnedBodyBytes + borrowedBodyBytes;
+		const cachedBodyBytes = this.#residentBytes + this.#oversizedBytes;
+		const residentBodyBytes = cachedBodyBytes + pinnedBodyBytes + borrowedBodyBytes;
 		return {
 			residentBodyBytes,
-			cachedBodyBytes: this.#residentBytes,
+			cachedBodyBytes,
 			pinnedBodyBytes,
 			borrowedBodyBytes,
 			overBudgetBytes: Math.max(0, residentBodyBytes - this.maxBytes),
-			cachedEntries: this.#cache.size,
+			cachedEntries: this.#cache.size + this.#oversized.size,
 			pinnedEntries: this.#pinned.size,
 			borrowedEntries,
 			maxBytes: this.maxBytes,
@@ -593,6 +606,57 @@ export class SessionEntryBodyCache {
 		if (current) return this.journal.readEntrySync(current);
 		return this.journal.readEntrySync(handle.ref, handle.sourceFilePath);
 	}
+	#evictNormalCache(): void {
+		while (this.#residentBytes > this.maxBytes && this.#cache.size) {
+			const oldest = this.#cache.entries().next().value!;
+			this.#cache.delete(oldest[0]);
+			this.#residentBytes -= oldest[1].bytes;
+		}
+	}
+	#scheduleOversizedDrain(): void {
+		if (this.#oversizedDrainScheduled) return;
+		this.#oversizedDrainScheduled = true;
+		queueMicrotask(() => {
+			this.#oversizedDrainScheduled = false;
+			this.#oversized.clear();
+			this.#oversizedBytes = 0;
+		});
+	}
+	#cacheOversized(handle: ColdHandle, body: ColdBody): void {
+		const existing = this.#oversized.get(handle);
+		if (existing) {
+			this.#oversized.delete(handle);
+			this.#oversizedBytes -= existing.bytes;
+		}
+		this.#oversized.set(handle, body);
+		this.#oversizedBytes += body.bytes;
+		while (this.#oversized.size > MAX_TRANSIENT_OVERSIZED) {
+			const oldest = this.#oversized.entries().next().value!;
+			this.#oversized.delete(oldest[0]);
+			this.#oversizedBytes -= oldest[1].bytes;
+		}
+		this.#scheduleOversizedDrain();
+	}
+	#onBodyExpanded(handle: ColdHandle, body: ColdBody): void {
+		if (handle.pinned === body) return;
+		const nextBytes = estimateSessionValueBytes(body.entry);
+		const delta = nextBytes - body.bytes;
+		body.bytes = nextBytes;
+		if (this.#cache.get(handle) === body) {
+			this.#residentBytes += delta;
+			if (body.bytes > this.maxBytes) {
+				this.#cache.delete(handle);
+				this.#residentBytes -= body.bytes;
+				if (this.maxBytes > 0) this.#cacheOversized(handle, body);
+			} else {
+				this.#evictNormalCache();
+			}
+			return;
+		}
+		if (this.#oversized.get(handle) === body) {
+			this.#oversizedBytes += delta;
+		}
+	}
 	#body(handle: ColdHandle): ColdBody {
 		if (handle.pinned) return handle.pinned;
 		let body = this.#cache.get(handle);
@@ -601,24 +665,41 @@ export class SessionEntryBodyCache {
 			this.#cache.set(handle, body);
 			return body;
 		}
-		const entry = this.#read(handle);
-		this.#hydrate(entry);
-		// Images may expand a short blob ref into a large base64 payload.
-		body = { entry: entry as unknown as Record<string, unknown>, bytes: estimateSessionValueBytes(entry) };
-		this.#cache.set(handle, body);
-		this.#residentBytes += body.bytes;
-		while (this.#residentBytes > this.maxBytes && this.#cache.size) {
-			const oldest = this.#cache.entries().next().value!;
-			this.#cache.delete(oldest[0]);
-			this.#residentBytes -= oldest[1].bytes;
+		body = this.#oversized.get(handle);
+		if (body) {
+			this.#oversized.delete(handle);
+			this.#oversized.set(handle, body);
+			return body;
 		}
-		return body;
+		const entry = this.#read(handle);
+		const created: ColdBody = { entry: entry as unknown as Record<string, unknown>, bytes: 0 };
+		this.#hydrate(entry, () => this.#onBodyExpanded(handle, created));
+		// Images may expand a short blob ref into a large base64 payload.
+		created.bytes = estimateSessionValueBytes(entry);
+		if (this.maxBytes === 0) return created;
+		if (created.bytes > this.maxBytes) {
+			// Single entries exceeding maxBytes would otherwise evict themselves immediately
+			// and re-read + re-parse the whole line on every Proxy property access. Hold at
+			// most MAX_TRANSIENT_OVERSIZED entries until the microtask boundary so synchronous
+			// scans hit O(1) without retaining oversized payloads across turns.
+			this.#cacheOversized(handle, created);
+			return created;
+		}
+		this.#cache.set(handle, created);
+		this.#residentBytes += created.bytes;
+		this.#evictNormalCache();
+		return created;
 	}
 	#pin(handle: ColdHandle, body: ColdBody): void {
 		const cached = this.#cache.get(handle);
 		if (cached) {
 			this.#cache.delete(handle);
 			this.#residentBytes -= cached.bytes;
+		}
+		const oversized = this.#oversized.get(handle);
+		if (oversized) {
+			this.#oversized.delete(handle);
+			this.#oversizedBytes -= oversized.bytes;
 		}
 		handle.pinned = body;
 		this.#pinned.add(handle);
@@ -811,5 +892,7 @@ export class SessionEntryBodyCache {
 		this.#pinned.clear();
 		this.#cache.clear();
 		this.#residentBytes = 0;
+		this.#oversized.clear();
+		this.#oversizedBytes = 0;
 	}
 }
