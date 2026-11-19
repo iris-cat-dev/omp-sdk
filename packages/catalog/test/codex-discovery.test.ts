@@ -1098,4 +1098,88 @@ describe("Codex model discovery", () => {
 		});
 		expect(result?.models.map(model => model.id)).toEqual(["gpt-5.6-luna"]);
 	});
+
+	it("never falls back to the generic ChatGPT /backend-api/models endpoint on official Codex errors", async () => {
+		const requestedUrls: string[] = [];
+		const fetchFn: typeof fetch = Object.assign(
+			async (input: string | URL | Request) => {
+				const url = input instanceof Request ? input.url : input.toString();
+				requestedUrls.push(url);
+				if (url.includes("/backend-api/codex/models")) {
+					return new Response("upstream unavailable", { status: 503 });
+				}
+				return Response.json({
+					models: [{ slug: "gpt-6.2-astra-wm" }, { slug: "research" }],
+				});
+			},
+			{ preconnect() {} },
+		);
+
+		const result = await fetchCodexModels({
+			accessToken: "test-token",
+			fetchFn,
+		});
+		expect(result).toBeNull();
+		expect(requestedUrls).toEqual(["https://chatgpt.com/backend-api/codex/models?client_version=0.169.1"]);
+
+		const explicitGeneric = await fetchCodexModels({
+			accessToken: "test-token",
+			paths: ["/models"],
+			fetchFn,
+		});
+		expect(explicitGeneric).toBeNull();
+		expect(requestedUrls).toHaveLength(1);
+	});
+
+	it("rejects non-catalog JSON envelopes instead of treating them as an authoritative empty catalog", async () => {
+		const officialDataEnvelope: typeof fetch = Object.assign(
+			async () => Response.json({ data: [{ id: "gpt-6.2-astra" }] }),
+			{ preconnect() {} },
+		);
+		const statusPayload: typeof fetch = Object.assign(async () => Response.json({ status: "temporary failure" }), {
+			preconnect() {},
+		});
+
+		expect(await fetchCodexModels({ accessToken: "test-token", fetchFn: officialDataEnvelope })).toBeNull();
+		expect(await fetchCodexModels({ accessToken: "test-token", fetchFn: statusPayload })).toBeNull();
+		expect(
+			await fetchCodexModels({
+				accessToken: "test-token",
+				baseUrl: "https://codex.example/backend-api",
+				fetchFn: statusPayload,
+			}),
+		).toBeNull();
+	});
+
+	it("aborts in-flight discovery and skips cache writes once the signal is aborted", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-codex-abort-"));
+		const dbPath = path.join(tempDir, "models.db");
+		const controller = new AbortController();
+		let sawSignalAborted = false;
+		const fetchFn: typeof fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit) => {
+				controller.abort(new Error("model discovery timed out"));
+				sawSignalAborted = init?.signal?.aborted === true;
+				return Response.json({ models: [{ slug: "gpt-6.2-astra" }] });
+			},
+			{ preconnect() {} },
+		);
+		try {
+			const options = openaiCodexModelManagerOptions({
+				resolveAccounts: async () => [{ accessToken: "test-token" }],
+				fetch: fetchFn,
+			});
+			await resolveProviderModels({ ...options, cacheDbPath: dbPath }, "online", controller.signal);
+			expect(sawSignalAborted).toBe(true);
+			const inspect = new Database(dbPath, { readonly: true });
+			try {
+				const count = inspect.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM model_cache").get();
+				expect(count?.n).toBe(0);
+			} finally {
+				inspect.close();
+			}
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
 });

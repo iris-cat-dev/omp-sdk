@@ -2660,8 +2660,8 @@ export class ModelRegistry {
 	): Promise<BuiltInDiscoveryResult> {
 		try {
 			const manager = createModelManager({ ...options, cacheDbPath: this.#cacheDbPath });
-			const result = await withModelDiscoveryTimeout(RUNTIME_DYNAMIC_MODEL_FETCH_TIMEOUT_MS, () =>
-				manager.refresh(strategy),
+			const result = await withModelDiscoveryTimeout(RUNTIME_DYNAMIC_MODEL_FETCH_TIMEOUT_MS, signal =>
+				manager.refresh(strategy, signal),
 			);
 			if (options.cacheScope !== undefined && strategy !== "offline") {
 				this.#accountDiscoveryScopes.set(options.providerId, options.cacheScope);

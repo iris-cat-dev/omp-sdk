@@ -8,6 +8,7 @@ import {
 	getProxyForProvider,
 	getProxyForUrl,
 	getProxyPolicyController,
+	installProxyFetch,
 	ProxyPolicyController,
 	proxyFetch,
 	setDefaultProxyPolicyController,
@@ -313,6 +314,49 @@ describe("SDK proxy fetch wire routing", () => {
 			const closed = Promise.withResolvers<void>();
 			server.close(error => (error ? closed.reject(error) : closed.resolve()));
 			await closed.promise;
+		}
+	});
+
+	it("preserves host fetch wrappers installed after installProxyFetch while keeping proxy routing", async () => {
+		const proxy = await responseProxy("wrapped-proxy");
+		const originalFetch = globalThis.fetch;
+		const seenUrls: string[] = [];
+		try {
+			installProxyFetch();
+			const installed = globalThis.fetch;
+			const wrapped = ((input: string | URL | Request, init?: RequestInit) => {
+				const url = input instanceof Request ? input.url : input.toString();
+				seenUrls.push(url);
+				if (url.includes("/blocked")) {
+					return Promise.reject(new Error("blocked by host wrapper"));
+				}
+				return installed(input, init);
+			}) as typeof fetch;
+			Object.defineProperties(wrapped, Object.getOwnPropertyDescriptors(installed));
+			globalThis.fetch = wrapped;
+
+			const controller = new ProxyPolicyController({
+				enabled: true,
+				default: { mode: "proxy", url: proxy.url },
+			});
+			await withProxyPolicy(controller, async () => {
+				expect(await (await proxyFetch()("http://provider.invalid/allowed")).text()).toBe("wrapped-proxy");
+				expect(await (await proxyFetch("openai-codex")("http://provider.invalid/codex")).text()).toBe(
+					"wrapped-proxy",
+				);
+				await expect(proxyFetch("openai-codex")("http://provider.invalid/blocked")).rejects.toThrow(
+					"blocked by host wrapper",
+				);
+			});
+			expect(seenUrls).toEqual([
+				"http://provider.invalid/allowed",
+				"http://provider.invalid/codex",
+				"http://provider.invalid/blocked",
+			]);
+			expect(proxy.requests).toBe(2);
+		} finally {
+			globalThis.fetch = originalFetch;
+			await proxy.close();
 		}
 	});
 });

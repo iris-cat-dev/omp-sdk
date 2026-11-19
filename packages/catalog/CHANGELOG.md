@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Prevented official OpenAI Codex discovery from falling back to the generic ChatGPT `/backend-api/models` catalog or writing late cache rows after discovery aborts/times out, and rejected non-catalog JSON envelopes.
 - Corrected Cursor Opus 5/5.5 Fast rates and GPT-5.4/5.5 long-context pricing; the 1M GPT-5.6 lanes now retain their long-context rate cards.
 - Removed the 2-second cap on Cursor `AvailableModels` discovery timeouts so slower responses use the caller's full discovery budget instead of prematurely falling back to `GetUsableModels`.
 - Fixed Codex subscription model discovery omitting available GPT-6.2 Astra and Sol models.

@@ -113,7 +113,7 @@ export interface ModelManagerOptions<TApi extends Api = Api, TModelsDevPayload =
 	 */
 	restoreCachedHeaders?: (model: Readonly<Model>) => Pick<Model, "headers" | "resolveHeaders"> | undefined;
 	/** Optional dynamic endpoint fetcher. */
-	fetchDynamicModels?: () => Promise<readonly ModelSpec<TApi>[] | null>;
+	fetchDynamicModels?: (signal?: AbortSignal) => Promise<readonly ModelSpec<TApi>[] | null>;
 	/** Optional stencil.so fallback hook. */
 	modelsDev?: ModelsDevFallback<TApi, TModelsDevPayload>;
 	/** Clock override for deterministic tests. */
@@ -146,7 +146,7 @@ export interface ModelResolutionResult<TApi extends Api = Api> {
  * Stateful facade over provider model resolution.
  */
 export interface ModelManager<TApi extends Api = Api> {
-	refresh(strategy?: ModelRefreshStrategy): Promise<ModelResolutionResult<TApi>>;
+	refresh(strategy?: ModelRefreshStrategy, signal?: AbortSignal): Promise<ModelResolutionResult<TApi>>;
 }
 
 /**
@@ -156,8 +156,8 @@ export function createModelManager<TApi extends Api = Api, TModelsDevPayload = u
 	options: ModelManagerOptions<TApi, TModelsDevPayload>,
 ): ModelManager<TApi> {
 	return {
-		refresh(strategy: ModelRefreshStrategy = "online-if-uncached") {
-			return resolveProviderModels(options, strategy);
+		refresh(strategy: ModelRefreshStrategy = "online-if-uncached", signal?: AbortSignal) {
+			return resolveProviderModels(options, strategy, signal);
 		},
 	};
 }
@@ -254,6 +254,7 @@ function restoreCachedModelHeaders<TApi extends Api>(
 export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPayload = unknown>(
 	options: ModelManagerOptions<TApi, TModelsDevPayload>,
 	strategy: ModelRefreshStrategy = "online-if-uncached",
+	signal?: AbortSignal,
 ): Promise<ModelResolutionResult<TApi>> {
 	if (options.alwaysRefetchDynamicModels && strategy === "online-if-uncached") {
 		strategy = "online";
@@ -352,7 +353,7 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 	}
 
 	const [fetchedModelsDevModels, fetchedDynamicModels] = shouldFetchFromNetwork
-		? await Promise.all([fetchModelsDev(options), dynamicFetcher ? fetchDynamicModels(dynamicFetcher) : null])
+		? await Promise.all([fetchModelsDev(options), dynamicFetcher ? fetchDynamicModels(dynamicFetcher, signal) : null])
 		: [null, null];
 	const modelsDevFetchSucceeded = fetchedModelsDevModels !== null;
 	const normalizedModelsDevModels = fetchedModelsDevModels?.models ?? [];
@@ -419,7 +420,7 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 	);
 	const resolutionAuthoritative = !hasRemoteFetcher || remoteResolutionComplete || shouldUseFreshCacheAsAuthoritative;
 	const remoteUpdatedAt = anyRemoteFetchSucceeded ? now() : undefined;
-	if (shouldFetchFromNetwork) {
+	if (shouldFetchFromNetwork && !signal?.aborted) {
 		if (anyRemoteFetchSucceeded) {
 			writeModelCache(
 				cacheProviderId,
@@ -529,11 +530,15 @@ async function fetchModelsDev<TApi extends Api, TModelsDevPayload>(
 }
 
 async function fetchDynamicModels<TApi extends Api>(
-	fetcher: () => Promise<readonly ModelSpec<TApi>[] | null>,
+	fetcher: (signal?: AbortSignal) => Promise<readonly ModelSpec<TApi>[] | null>,
+	signal?: AbortSignal,
 ): Promise<DiscoveredModelSet<TApi> | null> {
+	if (signal?.aborted) {
+		return null;
+	}
 	try {
-		const models = await fetcher();
-		if (models === null) {
+		const models = await fetcher(signal);
+		if (signal?.aborted || models === null) {
 			return null;
 		}
 		return buildDiscoveredModelSpecs<TApi>(models);

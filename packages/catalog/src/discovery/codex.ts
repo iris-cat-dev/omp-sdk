@@ -4,9 +4,16 @@ import { classifyModel } from "../compat/taxonomy";
 import { getBundledModels } from "../models";
 import type { FetchImpl, ModelSpec } from "../types";
 import { discoveryFetch } from "../utils";
-import { CODEX_BASE_URL, CODEX_CLIENT_VERSION, OPENAI_HEADER_VALUES, OPENAI_HEADERS } from "../wire/codex";
+import {
+	CODEX_BASE_URL,
+	CODEX_CLIENT_VERSION,
+	isOfficialCodexApiUrl,
+	OPENAI_HEADER_VALUES,
+	OPENAI_HEADERS,
+} from "../wire/codex";
 
-const DEFAULT_MODEL_LIST_PATHS = ["/codex/models", "/models"] as const;
+const OFFICIAL_MODEL_LIST_PATH = "/codex/models";
+const DEFAULT_MODEL_LIST_PATHS = [OFFICIAL_MODEL_LIST_PATH, "/models"] as const;
 const DEFAULT_CONTEXT_WINDOW = 272_000;
 const DEFAULT_MAX_TOKENS = 128_000;
 /**
@@ -129,13 +136,23 @@ export interface CodexModelDiscoveryResult {
 export async function fetchCodexModels(options: CodexModelDiscoveryOptions): Promise<CodexModelDiscoveryResult | null> {
 	const fetchFn = discoveryFetch(options.fetchFn);
 	const baseUrl = normalizeBaseUrl(options.baseUrl);
-	const paths = normalizePaths(options.paths);
+	const paths = normalizePaths(options.paths, baseUrl);
 	const clientVersion = normalizeClientVersion(options.clientVersion) ?? CODEX_CLIENT_VERSION;
 	const headers = buildCodexHeaders(options, clientVersion);
 
 	let sawSuccessfulResponse = false;
 	for (const path of paths) {
+		if (options.signal?.aborted) {
+			return null;
+		}
 		const requestUrl = buildModelsUrl(baseUrl, path, clientVersion);
+		const parsedUrl = new URL(requestUrl);
+		if (
+			parsedUrl.origin === "https://chatgpt.com" &&
+			parsedUrl.pathname.replace(/\/+$/, "") === "/backend-api/models"
+		) {
+			continue;
+		}
 		let response: Response;
 		try {
 			response = await fetchFn(requestUrl, {
@@ -144,6 +161,9 @@ export async function fetchCodexModels(options: CodexModelDiscoveryOptions): Pro
 				signal: options.signal,
 			});
 		} catch {
+			if (options.signal?.aborted) {
+				return null;
+			}
 			continue;
 		}
 
@@ -158,6 +178,9 @@ export async function fetchCodexModels(options: CodexModelDiscoveryOptions): Pro
 		try {
 			payload = await response.json();
 		} catch {
+			if (options.signal?.aborted) {
+				return null;
+			}
 			continue;
 		}
 
@@ -180,15 +203,30 @@ function normalizeBaseUrl(baseUrl: string | undefined): string {
 	return raw.replace(/\/+$/, "");
 }
 
-function normalizePaths(paths: readonly string[] | undefined): string[] {
-	if (!paths || paths.length === 0) {
+function defaultPathsForBaseUrl(baseUrl: string): string[] {
+	if (!isOfficialCodexApiUrl(baseUrl)) {
 		return [...DEFAULT_MODEL_LIST_PATHS];
+	}
+	try {
+		const pathname = new URL(baseUrl).pathname.replace(/\/+$/, "");
+		if (pathname === "/backend-api/codex") {
+			return ["/models"];
+		}
+	} catch {
+		// Fall back to the dedicated official Codex path.
+	}
+	return [OFFICIAL_MODEL_LIST_PATH];
+}
+
+function normalizePaths(paths: readonly string[] | undefined, baseUrl: string): string[] {
+	if (!paths || paths.length === 0) {
+		return defaultPathsForBaseUrl(baseUrl);
 	}
 	const normalized = paths
 		.map(path => path.trim())
 		.filter(path => path.length > 0)
 		.map(path => (path.startsWith("/") ? path : `/${path}`));
-	return normalized.length > 0 ? normalized : [...DEFAULT_MODEL_LIST_PATHS];
+	return normalized.length > 0 ? normalized : defaultPathsForBaseUrl(baseUrl);
 }
 
 function buildModelsUrl(baseUrl: string, path: string, clientVersion: string | undefined): string {
@@ -233,7 +271,11 @@ function normalizeCodexModels(
 		return null;
 	}
 
-	const entries = parsedResponse.models ?? parsedResponse.data ?? [];
+	const official = isOfficialCodexApiUrl(baseUrl);
+	const entries = official ? parsedResponse.models : (parsedResponse.models ?? parsedResponse.data);
+	if (!Array.isArray(entries)) {
+		return null;
+	}
 	const parsedEntries: ParsedCodexModelEntry[] = [];
 	for (const entry of entries) {
 		const parsed = parseCodexModelEntry(entry);

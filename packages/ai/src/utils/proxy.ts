@@ -47,7 +47,9 @@ function validatePolicy(policy: ProxyPolicy): ProxyPolicy {
 		if (!policy.providers || typeof policy.providers !== "object" || Array.isArray(policy.providers)) {
 			throw new ValidationError("Proxy providers must be a provider route map");
 		}
-		result.providers = Object.freeze(Object.fromEntries(Object.entries(policy.providers).map(([id, route]) => [id, validateRoute(route)])));
+		result.providers = Object.freeze(
+			Object.fromEntries(Object.entries(policy.providers).map(([id, route]) => [id, validateRoute(route)])),
+		);
 	}
 	if (policy.noProxy !== undefined) {
 		if (!Array.isArray(policy.noProxy) || policy.noProxy.some(rule => typeof rule !== "string" || !rule.trim())) {
@@ -64,12 +66,16 @@ export class ProxyPolicyController {
 	constructor(policy: ProxyPolicy = { enabled: false }) {
 		this.#policy = validatePolicy(policy);
 	}
-	getPolicy(): ProxyPolicy { return this.#policy; }
+	getPolicy(): ProxyPolicy {
+		return this.#policy;
+	}
 	setPolicy(policy: ProxyPolicy): void {
 		this.#policy = validatePolicy(policy);
 		this.#revision++;
 	}
-	get revision(): number { return this.#revision; }
+	get revision(): number {
+		return this.#revision;
+	}
 }
 
 const proxyContext = new AsyncLocalStorage<{ controller?: ProxyPolicyController; provider?: string }>();
@@ -189,7 +195,8 @@ export function getProxyForProvider(provider?: string): string | undefined {
 	const policy = getProxyPolicyController().getPolicy();
 	if (!policy.enabled) return undefined;
 	const id = provider ?? proxyContext.getStore()?.provider;
-	const route = (id && Object.hasOwn(policy.providers ?? {}, id) ? policy.providers?.[id] : undefined) ?? policy.default;
+	const route =
+		(id && Object.hasOwn(policy.providers ?? {}, id) ? policy.providers?.[id] : undefined) ?? policy.default;
 	return route?.mode === "proxy" ? route.url : undefined;
 }
 
@@ -198,7 +205,11 @@ export function getProxyForUrl(provider: string | undefined, url: URL): string |
 }
 
 /** Always stamp direct explicitly: Bun must never consult ambient proxy variables. */
-export function withProxyInit(input: string | URL | Request, init: RequestInit | undefined, proxyUrl?: string): RequestInit {
+export function withProxyInit(
+	input: string | URL | Request,
+	init: RequestInit | undefined,
+	proxyUrl?: string,
+): RequestInit {
 	let proxy = proxyUrl ?? "";
 	if (init && "unix" in init && init.unix) proxy = "";
 	try {
@@ -233,8 +244,21 @@ export function installProxyFetch(): void {
 	const base = portableFetch(globalThis.fetch);
 	installedPortableFetch = base;
 	installedPolicyFetch = (input, init) => {
+		const explicitProxy =
+			init && typeof init === "object" && "proxy" in init && typeof init.proxy === "string" ? init.proxy : undefined;
 		const provider = proxyContext.getStore()?.provider;
-		return base(input, withProxyInit(input, init, provider === undefined ? undefined : getProxyForProvider(provider)));
+		return base(
+			input,
+			withProxyInit(
+				input,
+				init,
+				explicitProxy !== undefined
+					? explicitProxy
+					: provider === undefined
+						? undefined
+						: getProxyForProvider(provider),
+			),
+		);
 	};
 	globalThis.fetch = installedPolicyFetch as typeof globalThis.fetch;
 }
