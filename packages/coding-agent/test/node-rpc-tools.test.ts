@@ -73,6 +73,80 @@ for (const artifact of ["node", "node-desktop"]) {
 			expect(observed.journal).toBeGreaterThan(0);
 		}, 30_000);
 
+		test("bash runs git worktree add natively under Node SDK instead of dispatching host.mjs worktree", async () => {
+			using root = TempDir.createSync("@node-sdk-git-worktree-");
+			const repoDir = root.join("repo");
+			const wtDir = root.join("wt");
+			fs.mkdirSync(repoDir, { recursive: true });
+			const runGit = (args: string[], cwd = repoDir) => {
+				const proc = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+				expect(proc.exitCode, new TextDecoder().decode(proc.stderr)).toBe(0);
+				return new TextDecoder().decode(proc.stdout).trim();
+			};
+			runGit(["init"]);
+			runGit(["config", "user.email", "test@example.com"]);
+			runGit(["config", "user.name", "Test User"]);
+			fs.writeFileSync(path.join(repoDir, "README.md"), "hello\n");
+			runGit(["add", "README.md"]);
+			runGit(["commit", "-m", "initial"]);
+			const headSha = runGit(["rev-parse", "HEAD"]);
+
+			const sdkUrl = pathToFileURL(path.join(packageDir, "dist", artifact, "sdk.mjs")).href;
+			const catalogUrl = pathToFileURL(
+				path.join(packageDir, "dist", artifact, "modules/oh-my-pi/pi-catalog/_root.mjs"),
+			).href;
+			const code = `
+				import { createAgentSession, discoverAuthStorage, ModelRegistry, SessionManager, Settings } from ${JSON.stringify(sdkUrl)};
+				import { getBundledModel } from ${JSON.stringify(catalogUrl)};
+				globalThis.fetch = async () => { throw new Error("Worktree smoke must not call a model"); };
+				const cwd = ${JSON.stringify(repoDir)};
+				const agentDir = ${JSON.stringify(root.join("agent"))};
+				const authStorage = await discoverAuthStorage(cwd);
+				const modelRegistry = new ModelRegistry(authStorage);
+				const model = getBundledModel("openai", "gpt-4o-mini");
+				if (!model) throw new Error("Missing bundled model metadata");
+				const { session } = await createAgentSession({
+					cwd, agentDir, model, modelRegistry, sessionManager: SessionManager.inMemory(),
+					settings: Settings.isolated({ "bash.autoBackground.enabled": false, "bashInterceptor.enabled": false, "autolearn.enabled": false, "memory.backend": "off" }),
+					toolNames: ["bash"], disableExtensionDiscovery: true, enableMCP: false, enableLsp: false,
+					skills: [], rules: [], contextFiles: [], promptTemplates: [], slashCommands: [],
+					workspaceTree: { rootPath: cwd, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+				});
+				try {
+					const bash = session.getToolByName("bash");
+					if (!bash) throw new Error("Missing registered bash tool");
+					const result = await bash.execute("node-worktree-add", { command: "git worktree add --detach ../wt HEAD", timeout: 30 });
+					process.stdout.write(JSON.stringify({
+						exitCode: result.details?.exitCode ?? 0,
+						text: result.content.find(block => block.type === "text")?.text ?? "",
+					}));
+				} finally { await session.dispose(); authStorage.close(); }
+			`;
+			const child = Bun.spawn(["node", "--input-type=module", "-e", code], {
+				cwd: repoDir,
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					...process.env,
+					HOME: root.path(),
+					PI_CODING_AGENT_DIR: root.join("agent"),
+					PI_CONFIG_DIR: ".omp",
+					PI_PROFILE: "",
+				},
+			});
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			expect(exitCode, stderr).toBe(0);
+			const observed = JSON.parse(stdout) as { exitCode: number; text: string };
+			expect(observed.exitCode, observed.text).toBe(0);
+			expect(observed.text).not.toContain("Unknown Node SDK worker selector");
+			expect(fs.existsSync(path.join(wtDir, "README.md"))).toBe(true);
+			expect(runGit(["rev-parse", "HEAD"], wtDir)).toBe(headSha);
+		}, 30_000);
+
 		test.each([false, true])(
 			"idle RPC session durability with noSession=%s",
 			async noSession => {

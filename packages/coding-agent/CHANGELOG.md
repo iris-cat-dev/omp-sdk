@@ -44,6 +44,7 @@
 
 ### Fixed
 
+- Fixed `bash` rewriting `git worktree add` to `host.mjs worktree add` under the Node SDK, which failed with `Unknown Node SDK worker selector: worktree`; Node SDK sessions now run `git worktree add` directly.
 - Fixed long Cursor tool runs continuing past the context budget without auto-compaction; overflow recovery keeps completed tool results and pauses if the context cannot be reduced.
 - Fixed missing historical image files blocking resumed conversations; unavailable attachments become text in model requests while journal references and healthy images remain intact.
 - Fixed core Node SDK artifacts failing to load directly from unmarked source checkouts; staged packages still require a matching profile marker.

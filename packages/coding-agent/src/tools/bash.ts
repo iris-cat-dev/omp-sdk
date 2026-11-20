@@ -1147,7 +1147,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			}
 		}
 
-		if (cfgWorktreeClone.get(this.session.settings)) {
+		// Node SDK's worker host (`node-cli.ts`) only dispatches worker selectors
+		// and does not expose the `worktree` CLI subcommand; leave `git worktree add`
+		// unchanged for git when running outside Bun.
+		if (typeof Bun !== "undefined" && cfgWorktreeClone.get(this.session.settings)) {
 			command = rewriteGitWorktreeAdd(command, resolveCliEntryCmd());
 		}
 
