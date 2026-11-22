@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added native Desktop Plan mode: review submitted session-local Markdown, refine it, or approve that exact revision after reopening the session.
+- Plan mode asks about unresolved decisions that materially affect scope or success. Desktop prevents a proposal from being submitted in the same tool batch as a clarification.
 - Added live native Bash execution traces to foreground, background, and final tool details in both generic and Desktop Node SDK builds, preserving real command/output attribution through failure, timeout, and cancellation.
 - Added `compactionCount` to session statistics and RPC `get_session_stats`, counting persisted compactions on the selected branch across resume without including unsuccessful attempts.
 - Added opt-in sandbox image generation through the host's native image settings, sandbox-only input/output files and profile-3 admission; QQ can upload generated images without exposing other host tools.

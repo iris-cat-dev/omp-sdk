@@ -408,6 +408,22 @@ export type GoalOp = "get" | "create" | "resume" | "pause" | "drop";
 
 export type GoalStatus = "active" | "paused" | "budget-limited" | "complete" | "dropped";
 
+export type DesktopPlanChoice = "approve" | "refine";
+
+export interface DesktopPlanReview {
+	id: string;
+	title: string;
+	path: string;
+	markdown: string;
+}
+
+export interface DesktopPlanState {
+	enabled: boolean;
+	review?: DesktopPlanReview;
+	/** The approval committed but its execution turn could not start. */
+	executionError?: string;
+}
+
 export type SlashCommandSource = "builtin" | "skill" | "extension" | "custom" | "mcp_prompt" | "file";
 
 /** Forwarded subagent frames: none, lifecycle and progress, or also raw session events. */
@@ -1170,6 +1186,12 @@ export interface SessionSettledEvent {
 	type: "session_settled";
 }
 
+/** A new Desktop plan is ready for review; emitted after the planning turn yields. */
+export interface DesktopPlanReviewEvent {
+	type: "plan_review";
+	review: DesktopPlanReview;
+}
+
 export interface ExtensionError {
 	type: "extension_error";
 	extensionPath: string;
@@ -1607,7 +1629,7 @@ export interface HostUriSchemeDefinition {
 }
 
 /** Unsolicited outbound frame (everything except responses and host tool/URI requests), discriminated by `type`. */
-export type RpcNotification = ReadyEvent | PromptResultEvent | SessionSettledEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | DictationStateEvent | DictationTranscriptEvent | DictationEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent;
+export type RpcNotification = ReadyEvent | PromptResultEvent | SessionSettledEvent | DesktopPlanReviewEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | DictationStateEvent | DictationTranscriptEvent | DictationEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent;
 
 /** Any frame the server writes to stdout (after reassembling `rpc_chunk` sequences), discriminated by `type`. */
 export type RpcServerFrame = RpcResponse | RpcHostRequest | RpcNotification;
@@ -1666,6 +1688,15 @@ export interface OpenSessionParams {
 	sessionDir: string;
 	provider?: string;
 	modelId?: string;
+}
+
+export interface SetPlanModeParams {
+	enabled: boolean;
+}
+
+export interface ResolvePlanReviewParams {
+	reviewId: string;
+	choice: DesktopPlanChoice;
 }
 
 export interface GetRuntimeResourcesResult {
@@ -2054,6 +2085,9 @@ export interface RpcWireCommands {
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
 	get_state: { params: undefined; result: SessionState };
+	get_plan_state: { params: undefined; result: DesktopPlanState };
+	set_plan_mode: { params: SetPlanModeParams; result: DesktopPlanState };
+	resolve_plan_review: { params: ResolvePlanReviewParams; result: DesktopPlanState };
 	get_prompt_context: { params: undefined; result: PromptContext };
 	get_runtime_resources: { params: undefined; result: GetRuntimeResourcesResult };
 	release_runtime_resource: { params: ReleaseRuntimeResourceParams; result: ReleaseRuntimeResourceResult };

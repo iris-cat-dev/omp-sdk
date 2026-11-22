@@ -2180,6 +2180,75 @@ func (v *GoalStatus) UnmarshalJSON(data []byte) error {
 	return unknownValue("GoalStatus", s)
 }
 
+type DesktopPlanChoice string
+
+const (
+	DesktopPlanChoiceApprove DesktopPlanChoice = "approve"
+	DesktopPlanChoiceRefine  DesktopPlanChoice = "refine"
+)
+
+func (v *DesktopPlanChoice) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "DesktopPlanChoice")
+	if err != nil {
+		return err
+	}
+	switch value := DesktopPlanChoice(s); value {
+	case DesktopPlanChoiceApprove, DesktopPlanChoiceRefine:
+		*v = value
+		return nil
+	}
+	return unknownValue("DesktopPlanChoice", s)
+}
+
+type DesktopPlanReview struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Path     string `json:"path"`
+	Markdown string `json:"markdown"`
+}
+
+func (v *DesktopPlanReview) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "DesktopPlanReview", v.decodeFrom)
+}
+
+func (v *DesktopPlanReview) decodeFrom(raw map[string]json.RawMessage) error {
+	var out DesktopPlanReview
+	d := fieldDecoder{raw: raw, owner: "DesktopPlanReview"}
+	d.required("id", &out.ID)
+	d.required("title", &out.Title)
+	d.required("path", &out.Path)
+	d.required("markdown", &out.Markdown)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type DesktopPlanState struct {
+	Enabled bool               `json:"enabled"`
+	Review  *DesktopPlanReview `json:"review,omitempty"`
+	// The approval committed but its execution turn could not start.
+	ExecutionError *string `json:"executionError,omitempty"`
+}
+
+func (v *DesktopPlanState) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "DesktopPlanState", v.decodeFrom)
+}
+
+func (v *DesktopPlanState) decodeFrom(raw map[string]json.RawMessage) error {
+	var out DesktopPlanState
+	d := fieldDecoder{raw: raw, owner: "DesktopPlanState"}
+	d.required("enabled", &out.Enabled)
+	d.optional("review", &out.Review)
+	d.optional("executionError", &out.ExecutionError)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SlashCommandSource string
 
 const (
@@ -5278,6 +5347,32 @@ func (v SessionSettledEvent) MarshalJSON() ([]byte, error) {
 	return encodeObject(plain(v), `"type":"session_settled"`, nil)
 }
 
+// A new Desktop plan is ready for review; emitted after the planning turn yields.
+type DesktopPlanReviewEvent struct {
+	Review DesktopPlanReview `json:"review"`
+}
+
+func (v *DesktopPlanReviewEvent) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "DesktopPlanReviewEvent", v.decodeFrom)
+}
+
+func (v *DesktopPlanReviewEvent) decodeFrom(raw map[string]json.RawMessage) error {
+	var out DesktopPlanReviewEvent
+	d := fieldDecoder{raw: raw, owner: "DesktopPlanReviewEvent"}
+	d.constant("type", "plan_review")
+	d.required("review", &out.Review)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v DesktopPlanReviewEvent) MarshalJSON() ([]byte, error) {
+	type plain DesktopPlanReviewEvent
+	return encodeObject(plain(v), `"type":"plan_review"`, nil)
+}
+
 type ExtensionError struct {
 	ExtensionPath string `json:"extensionPath"`
 	Event         string `json:"event"`
@@ -7165,6 +7260,7 @@ type RpcNotificationVariant interface {
 func (ReadyEvent) isRpcNotification()                   {}
 func (PromptResultEvent) isRpcNotification()            {}
 func (SessionSettledEvent) isRpcNotification()          {}
+func (DesktopPlanReviewEvent) isRpcNotification()       {}
 func (ExtensionError) isRpcNotification()               {}
 func (ExtensionUiRequest) isRpcNotification()           {}
 func (AvailableCommandsUpdateEvent) isRpcNotification() {}
@@ -7237,6 +7333,8 @@ func (v *RpcNotification) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[PromptResultEvent](raw)
 	case "session_settled":
 		value, err = decodeVariant[SessionSettledEvent](raw)
+	case "plan_review":
+		value, err = decodeVariant[DesktopPlanReviewEvent](raw)
 	case "extension_error":
 		value, err = decodeVariant[ExtensionError](raw)
 	case "extension_ui_request":
@@ -7370,6 +7468,7 @@ func (HostUriCancelRequest) isRpcServerFrame()         {}
 func (ReadyEvent) isRpcServerFrame()                   {}
 func (PromptResultEvent) isRpcServerFrame()            {}
 func (SessionSettledEvent) isRpcServerFrame()          {}
+func (DesktopPlanReviewEvent) isRpcServerFrame()       {}
 func (ExtensionError) isRpcServerFrame()               {}
 func (ExtensionUiRequest) isRpcServerFrame()           {}
 func (AvailableCommandsUpdateEvent) isRpcServerFrame() {}
@@ -7452,6 +7551,8 @@ func (v *RpcServerFrame) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[PromptResultEvent](raw)
 	case "session_settled":
 		value, err = decodeVariant[SessionSettledEvent](raw)
+	case "plan_review":
+		value, err = decodeVariant[DesktopPlanReviewEvent](raw)
 	case "extension_error":
 		value, err = decodeVariant[ExtensionError](raw)
 	case "extension_ui_request":
@@ -8409,6 +8510,38 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	var out SessionState
 	err := c.call(ctx, "get_state", nil, 0, &out)
+	return out, err
+}
+
+// GetPlanState sends "get_plan_state": Read the selected branch’s Plan state on a Desktop-enabled Node host.
+func (c Commands) GetPlanState(ctx context.Context) (DesktopPlanState, error) {
+	var out DesktopPlanState
+	err := c.call(ctx, "get_plan_state", nil, 0, &out)
+	return out, err
+}
+
+// SetPlanModeCommand holds the parameters of "set_plan_mode".
+type SetPlanModeCommand struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SetPlanMode sends "set_plan_mode": Enable read-only Plan mode or turn it off without executing a draft. Desktop-enabled Node hosts only.
+func (c Commands) SetPlanMode(ctx context.Context, p SetPlanModeCommand) (DesktopPlanState, error) {
+	var out DesktopPlanState
+	err := c.call(ctx, "set_plan_mode", p, 0, &out)
+	return out, err
+}
+
+// ResolvePlanReviewCommand holds the parameters of "resolve_plan_review".
+type ResolvePlanReviewCommand struct {
+	ReviewID string            `json:"reviewId"`
+	Choice   DesktopPlanChoice `json:"choice"`
+}
+
+// ResolvePlanReview sends "resolve_plan_review": Refine or approve the pending Plan revision; an approved revision starts an agent-authored execution turn. Desktop-enabled Node hosts only.
+func (c Commands) ResolvePlanReview(ctx context.Context, p ResolvePlanReviewCommand) (DesktopPlanState, error) {
+	var out DesktopPlanState
+	err := c.call(ctx, "resolve_plan_review", p, 0, &out)
 	return out, err
 }
 

@@ -84,6 +84,7 @@ import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } f
 import { RpcBtwController } from "./rpc-btw";
 import { RpcGoalController } from "./rpc-goal";
 import { RpcDictationBridge, type RpcDictationControllerFactory } from "./rpc-dictation";
+import { isDesktopPlanEntry, RpcDesktopPlan } from "./rpc-desktop-plan";
 import { RpcLiveBridge, type RpcLiveSessionFactory } from "./rpc-live";
 import { RpcOutputWriter } from "./rpc-output";
 import { handleRpcOutputFailure } from "./rpc-output-failure";
@@ -1427,6 +1428,8 @@ export interface RpcModeOptions {
 	/** The session's MCP manager, so `/mcp` builtins resolve and reconnect live servers. */
 	mcpManager?: MCPManager;
 	onCustomFrame?: (frame: unknown) => boolean;
+	/** Desktop's typed Plan review extension; ignored for sandbox sessions. */
+	desktopPlanMode?: boolean;
 }
 
 /**
@@ -1487,6 +1490,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		if (isRecord(obj) && obj.type === "response" && obj.command === "negotiate_protocol" && obj.success === true)
 			frameEncoder.setProtocolVersion(2);
 	};
+	const desktopPlan = options.desktopPlanMode && !session.sandbox ? new RpcDesktopPlan(session) : undefined;
+	if (desktopPlan) {
+		session.setSessionSwitchReconciler(() => desktopPlan.restore());
+		await desktopPlan.restore();
+	}
 	const sessionTitles = new RpcSessionTitles(session, output);
 	titleBridge = sessionTitles;
 	const emitRpcTitles = shouldEmitRpcTitles();
@@ -1870,6 +1878,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		goalController.observe(event);
 		promptResults.observe(event);
 		settleWatcher.observe(event);
+		const review = desktopPlan?.observe(event);
+		if (review) output({ type: "plan_review", review });
 	});
 	await goalController.reconcile();
 	await goalController.settled();
@@ -2004,6 +2014,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			const isCurrent = () =>
 				inputGate.isCurrent(command) && !shutdownState.requested && session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
+			desktopPlan?.assertCanPrompt();
 			let text = command.message;
 			let images = command.images;
 			const runner = session.extensionRunner;
@@ -2133,6 +2144,58 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			return error(id, command.type, "Sandbox runtime operation denied");
 
 		switch (command.type) {
+			case "get_plan_state":
+			case "set_plan_mode":
+			case "resolve_plan_review": {
+				if (!desktopPlan) return error(id, command.type, `Unknown command: ${command.type}`);
+				return inputGate.enqueue(async () => {
+					if (shutdownState.requested) throw new Error("OMP runtime is shutting down");
+					if (command.type === "get_plan_state") return success(id, command.type, desktopPlan.state);
+					if (command.type === "set_plan_mode") {
+						if (typeof command.enabled !== "boolean") throw new Error("enabled must be a boolean");
+						return success(id, command.type, await desktopPlan.setEnabled(command.enabled));
+					}
+					if (
+						typeof command.reviewId !== "string" ||
+						!command.reviewId ||
+						(command.choice !== "approve" && command.choice !== "refine")
+					) {
+						throw new Error('Plan review requires a reviewId and a choice of "approve" or "refine".');
+					}
+					const execution = await desktopPlan.resolve(command.reviewId, command.choice);
+					if (execution) {
+						const ticket = promptResults.begin(id);
+						const started = Promise.withResolvers<void>();
+						const unsubscribe = session.subscribe(event => {
+							if (event.type === "agent_start") started.resolve();
+						});
+						const result = session.promptCustomMessage(execution);
+						try {
+							await Promise.race([
+								started.promise,
+								result.then(invoked => {
+									if (!invoked) throw new Error("The approved plan execution turn did not start.");
+								}),
+							]);
+						} catch (cause) {
+							promptResults.discard(ticket);
+							const message = cause instanceof Error ? cause.message : String(cause);
+							return success(id, command.type, {
+								...desktopPlan.state,
+								executionError: `Plan approved, but execution did not start: ${message}`,
+							});
+						} finally {
+							unsubscribe();
+						}
+						void result.then(
+							() => promptResults.settle(ticket),
+							cause => promptResults.fail(ticket, cause instanceof Error ? cause.message : String(cause)),
+						);
+					}
+					return success(id, command.type, desktopPlan.state);
+				});
+			}
+
 			case "negotiate_protocol": {
 				if (command.protocolVersion !== 2)
 					return error(id, "negotiate_protocol", `Unsupported RPC protocol version: ${command.protocolVersion}`);
@@ -2488,6 +2551,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			}
 
 			case "goal": {
+				if (desktopPlan?.enabled && command.op !== "get")
+					return error(id, "goal", "Exit Plan mode before changing goal mode.");
 				try {
 					return success(id, "goal", await goalController.handle(command));
 				} catch (goalError) {
@@ -2534,6 +2599,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 						"Sandbox policy annotations are SDK-owned",
 						"invalid_annotation",
 					);
+				if (isDesktopPlanEntry(command.customType))
+					return error(id, command.type, "Plan annotations are SDK-owned", "invalid_annotation");
 				const entryId = session.sessionManager.appendCustomEntry(command.customType, command.data);
 				await session.sessionManager.ensureOnDisk();
 				await session.sessionManager.flush();
@@ -2579,6 +2646,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			}
 
 			case "set_active_tools": {
+				if (desktopPlan?.enabled)
+					return error(id, command.type, "Exit Plan mode before changing the active tool set.");
 				const requested = command.tools;
 				if (
 					requested !== null &&
@@ -2881,6 +2950,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// =================================================================
 
 			case "bash": {
+				if (desktopPlan?.enabled)
+					return error(id, command.type, "Shell execution is unavailable in read-only Plan mode.");
 				const result = await session.executeBash(command.command);
 				return success(id, "bash", result);
 			}

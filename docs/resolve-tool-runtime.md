@@ -35,8 +35,15 @@ Plan mode installs a separate proposal handler through `setPlanProposalHandler(.
 - Interactive mode hands `PlanApprovalDetails` to the plan-review UI.
 - ACP mode runs elicitation/approval and emits mode updates.
 - PlanYolo auto-approves and switches to the execution target.
+- Desktop's opt-in Node RPC host yields after a successful proposal and emits `plan_review` with the saved Markdown snapshot.
 
 `xd://propose` dispatches the written slug to the installed plan proposal handler and is valid only while plan mode is active. The handler validates that a real plan artifact exists. Slug-based `local://<slug>-plan.md` lookup can fall back to the recorded plan path or discovered plan artifacts; proposal does not rename the file.
+
+Desktop enables this surface with `startNodeRpcHost({ ..., desktopPlanMode: true })`. Sandbox hosts do not expose it. `get_plan_state` returns `{ enabled, review? }` on the active session branch, including after reopen. A review is `{ id, title, path, markdown }`; listen for `plan_review` for new submissions and use `get_plan_state` to retrieve an existing one. `set_plan_mode` takes `{ enabled }`; disabling dismisses any pending review without implementing it.
+
+For scope, compatibility, permissions, or acceptance decisions that cannot be resolved by inspection, the planner asks through the existing structured `ask` dialog before proposing. The recommended option is only guidance: Plan questions have no timeout, and Desktop rejects a proposal sent in the same tool batch as a question.
+
+Use `resolve_plan_review` with `{ reviewId, choice: "refine" | "approve" }`. Refine clears only that review and leaves the session in read-only planning with the same draft path. Approve consumes the review, restores the normal tool set, and starts an agent-authored turn from the reviewed snapshot. It does not modify the working tree or rewrite the draft to prepare execution. All three commands return the current Plan state. An approval that committed but could not start execution additionally returns `executionError`; the same ID cannot be used again.
 
 Ordinary print mode has no interactive review surface and ignores `plan.defaultOnStartup`; use `--plan-yolo` for the supported headless approval-and-execution flow.
 

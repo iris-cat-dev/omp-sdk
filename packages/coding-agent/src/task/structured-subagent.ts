@@ -690,10 +690,9 @@ async function loadPlanReference(
 	policy: EffectiveSubagentPolicy,
 ): Promise<{ path: string; content: string } | undefined> {
 	if (policy.planMode || policy.preparedSession !== undefined) return undefined;
-	return loadOverallPlanReference(
-		request.session.getPlanReferencePath?.() ?? "local://PLAN.md",
-		sessionLocalProtocolOptions(request.session),
-	);
+	const planPath = request.session.getPlanReferencePath?.();
+	if (planPath === null) return undefined;
+	return loadOverallPlanReference(planPath ?? "local://PLAN.md", sessionLocalProtocolOptions(request.session));
 }
 
 function buildFailureResult(

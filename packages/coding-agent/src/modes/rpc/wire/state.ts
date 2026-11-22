@@ -32,6 +32,18 @@ export const stateDefs = {
 	TodoStatus: "'pending' | 'in_progress' | 'completed' | 'abandoned' | 'blocked'",
 	GoalOp: "'get' | 'create' | 'resume' | 'pause' | 'drop'",
 	GoalStatus: "'active' | 'paused' | 'budget-limited' | 'complete' | 'dropped'",
+	DesktopPlanChoice: "'approve' | 'refine'",
+	DesktopPlanReview: {
+		id: "string",
+		title: "string",
+		path: "string",
+		markdown: "string",
+	},
+	DesktopPlanState: {
+		enabled: "boolean",
+		"review?": "DesktopPlanReview",
+		"executionError?": doc("string", "The approval committed but its execution turn could not start."),
+	},
 	SlashCommandSource: "'builtin' | 'skill' | 'extension' | 'custom' | 'mcp_prompt' | 'file'",
 	SubagentSubscriptionLevel: doc(
 		"'off' | 'progress' | 'events'",

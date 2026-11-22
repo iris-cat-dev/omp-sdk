@@ -142,6 +142,7 @@ describe("AgentSession plan-mode convergence", () => {
 			xdev?: boolean;
 			rebuildGate?: { fail: boolean };
 			deviceOnlyWrite?: boolean;
+			desktop?: boolean;
 		},
 	): Promise<PlanHarness> {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -149,6 +150,7 @@ describe("AgentSession plan-mode convergence", () => {
 
 		const askTool = makeTool("ask");
 		const writeTool = makeTool("write");
+		if (options?.desktop) writeTool.parameters = type({ path: "string", content: "string" });
 		const readTool = makeTool("read");
 		const toolRegistry = new Map<string, AgentTool>([
 			["ask", askTool],
@@ -227,7 +229,13 @@ describe("AgentSession plan-mode convergence", () => {
 					}
 				: undefined,
 		});
-		if (!options?.planYolo) created.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
+		if (!options?.planYolo) {
+			created.setPlanModeState({
+				enabled: true,
+				planFilePath: "local://PLAN.md",
+				desktop: options?.desktop ? { awaitingReview: false } : undefined,
+			});
+		}
 		session = created;
 		return {
 			session: created,
@@ -238,6 +246,32 @@ describe("AgentSession plan-mode convergence", () => {
 			isPendingFullWriteDescription: () => pendingFullWriteDescription,
 		};
 	}
+
+	it.each(["proposal first", "question first"])("blocks a Desktop proposal bundled with a question (%s)", async order => {
+		const question = { type: "toolCall", name: "ask", id: "scope", arguments: {} } as const;
+		const proposal = {
+			type: "toolCall",
+			name: "write",
+			id: "premature",
+			arguments: { path: "xd://propose", content: "sample" },
+		} as const;
+		const { session } = await createPlanSession(
+			[
+				{ content: order === "proposal first" ? [proposal, question] : [question, proposal] },
+				{ content: [{ ...proposal, id: "after-answer" }] },
+				{ content: ["Ready."] },
+			],
+			{ desktop: true },
+		);
+
+		await session.prompt("Plan the workflow redesign");
+		await session.waitForIdle();
+
+		const results = session.agent.state.messages.filter(message => message.role === "toolResult");
+		expect(results.find(result => result.toolCallId === "scope")).toMatchObject({ isError: false });
+		expect(results.find(result => result.toolCallId === "premature")).toMatchObject({ isError: true });
+		expect(results.find(result => result.toolCallId === "after-answer")).toMatchObject({ isError: false });
+	});
 
 	it("T1: an advisor concern does not wake the primary in plan mode", async () => {
 		const harness = await createPlanSession([], {

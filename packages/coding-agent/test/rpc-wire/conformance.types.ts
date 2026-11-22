@@ -28,6 +28,7 @@ import type {
 	RpcBtwHistoryRecord,
 	RpcBtwRecordFrame,
 	RpcCommand,
+	RpcDesktopPlanReviewFrame,
 	RpcDictationEndFrame,
 	RpcDictationStateFrame,
 	RpcDictationTranscriptFrame,
@@ -204,6 +205,7 @@ export type Frames = Assert<
 		promptResult: Outbound<RpcPromptResultFrame, Wire.PromptResultEvent>;
 		promptError: Outbound<RpcPromptError, Wire.PromptError>;
 		sessionSettled: Outbound<RpcSessionSettledFrame, Wire.SessionSettledEvent>;
+		desktopPlanReview: Outbound<RpcDesktopPlanReviewFrame, Wire.DesktopPlanReviewEvent>;
 		availableCommands: Outbound<RpcAvailableCommandsUpdateFrame, Wire.AvailableCommandsUpdateEvent>;
 		subagentLifecycle: Outbound<RpcSubagentLifecycleFrame, Wire.SubagentLifecycleEvent>;
 		subagentLifecyclePayload: Outbound<RpcSubagentLifecycleFrame["payload"], Wire.SubagentLifecyclePayload>;

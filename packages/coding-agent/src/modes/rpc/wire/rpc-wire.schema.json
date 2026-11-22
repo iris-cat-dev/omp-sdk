@@ -142,6 +142,39 @@
 				"clientOmit": []
 			},
 			{
+				"name": "get_plan_state",
+				"doc": "Read the selected branch’s Plan state on a Desktop-enabled Node host.",
+				"params": null,
+				"result": "DesktopPlanState",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "set_plan_mode",
+				"doc": "Enable read-only Plan mode or turn it off without executing a draft. Desktop-enabled Node hosts only.",
+				"params": "SetPlanModeParams",
+				"result": "DesktopPlanState",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "resolve_plan_review",
+				"doc": "Refine or approve the pending Plan revision; an approved revision starts an agent-authored execution turn. Desktop-enabled Node hosts only.",
+				"params": "ResolvePlanReviewParams",
+				"result": "DesktopPlanState",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "get_prompt_context",
 				"doc": "Read the current prompt context without generating or running session hooks.",
 				"params": null,
@@ -2450,6 +2483,54 @@
 				"dropped"
 			],
 			"type": "string"
+		},
+		"DesktopPlanChoice": {
+			"enum": [
+				"approve",
+				"refine"
+			],
+			"type": "string"
+		},
+		"DesktopPlanReview": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"title": {
+					"type": "string"
+				},
+				"path": {
+					"type": "string"
+				},
+				"markdown": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"id",
+				"title",
+				"path",
+				"markdown"
+			]
+		},
+		"DesktopPlanState": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				},
+				"review": {
+					"$ref": "#/$defs/DesktopPlanReview"
+				},
+				"executionError": {
+					"type": "string",
+					"description": "The approval committed but its execution turn could not start."
+				}
+			},
+			"required": [
+				"enabled"
+			]
 		},
 		"SlashCommandSource": {
 			"enum": [
@@ -5012,6 +5093,22 @@
 			],
 			"description": "The session went quiet: the last run yielded and no background work can wake it."
 		},
+		"DesktopPlanReviewEvent": {
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "plan_review"
+				},
+				"review": {
+					"$ref": "#/$defs/DesktopPlanReview"
+				}
+			},
+			"required": [
+				"type",
+				"review"
+			],
+			"description": "A new Desktop plan is ready for review; emitted after the planning turn yields."
+		},
 		"ExtensionError": {
 			"type": "object",
 			"properties": {
@@ -6421,6 +6518,9 @@
 					"$ref": "#/$defs/SessionSettledEvent"
 				},
 				{
+					"$ref": "#/$defs/DesktopPlanReviewEvent"
+				},
+				{
 					"$ref": "#/$defs/ExtensionError"
 				},
 				{
@@ -6655,6 +6755,32 @@
 			},
 			"required": [
 				"sessionDir"
+			]
+		},
+		"SetPlanModeParams": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"enabled"
+			]
+		},
+		"ResolvePlanReviewParams": {
+			"type": "object",
+			"properties": {
+				"reviewId": {
+					"type": "string"
+				},
+				"choice": {
+					"$ref": "#/$defs/DesktopPlanChoice"
+				}
+			},
+			"required": [
+				"reviewId",
+				"choice"
 			]
 		},
 		"GetRuntimeResourcesResult": {

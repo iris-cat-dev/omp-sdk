@@ -2616,7 +2616,7 @@ async function createAgentSessionScoped(options: InternalCreateAgentSessionOptio
 			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			getPlanModeState: () => session?.getPlanModeState(),
-			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
+			getPlanReferencePath: () => (session ? session.getOverallPlanReferencePath() : "local://PLAN.md"),
 			getGoalModeState: () => session?.getGoalModeState(),
 			getGoalRuntime: () => session?.goalRuntime,
 			getUsageStatistics: () => sessionManager.getUsageStatistics(),
@@ -4591,7 +4591,7 @@ async function createAgentSessionScoped(options: InternalCreateAgentSessionOptio
 		};
 
 		const transformContext = async (messages: AgentMessage[], signal?: AbortSignal) => {
-			const withContext = await extensionRunner.emitContext(messages, signal);
+			const withContext = await extensionRunner.emitContext(session?.filterDesktopPlanContext(messages) ?? messages, signal);
 			return wrapSteeringForModel(withContext);
 		};
 		// Per-request provider-context transforms. Obfuscate FIRST so secrets are

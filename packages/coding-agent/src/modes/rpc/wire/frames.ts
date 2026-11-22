@@ -51,6 +51,10 @@ export const frameDefs = {
 		{ type: "'session_settled'" },
 		"The session went quiet: the last run yielded and no background work can wake it.",
 	),
+	DesktopPlanReviewEvent: doc(
+		{ type: "'plan_review'", review: "DesktopPlanReview" },
+		"A new Desktop plan is ready for review; emitted after the planning turn yields.",
+	),
 	ExtensionError: { type: "'extension_error'", extensionPath: "string", event: "string", error: "string" },
 	AvailableCommandsUpdateEvent: doc(
 		{ type: "'available_commands_update'", commands: "AvailableSlashCommand[]" },

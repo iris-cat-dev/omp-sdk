@@ -53,6 +53,31 @@ export interface RpcPromptContext {
 	categories: ContextViewData["categories"];
 }
 
+/** Desktop Node host extension, available only when explicitly enabled. */
+export interface RpcDesktopPlanReview {
+	id: string;
+	title: string;
+	path: string;
+	markdown: string;
+}
+
+export interface RpcDesktopPlanState {
+	enabled: boolean;
+	review?: RpcDesktopPlanReview;
+	/** The approval committed, but the execution turn could not be started. */
+	executionError?: string;
+}
+
+export interface RpcDesktopPlanReviewFrame {
+	type: "plan_review";
+	review: RpcDesktopPlanReview;
+}
+
+export type RpcDesktopPlanCommand =
+	| { id?: string; type: "get_plan_state" }
+	| { id?: string; type: "set_plan_mode"; enabled: boolean }
+	| { id?: string; type: "resolve_plan_review"; reviewId: string; choice: "approve" | "refine" };
+
 // ============================================================================
 // RPC Commands (stdin)
 // ============================================================================
@@ -88,6 +113,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| RpcDesktopPlanCommand
 	| { id?: string; type: "get_prompt_context" }
 	| { id?: string; type: "get_runtime_resources" }
 	| { id?: string; type: "release_runtime_resource"; resourceId: string }
@@ -459,8 +485,19 @@ export interface RpcSubagentMessagesResult {
 // RPC Responses (stdout)
 // ============================================================================
 
+type DesktopPlanResponse = {
+	[Command in RpcDesktopPlanCommand["type"]]: {
+		id?: string;
+		type: "response";
+		command: Command;
+		success: true;
+		data: RpcDesktopPlanState;
+	};
+}[RpcDesktopPlanCommand["type"]];
+
 // Success responses with data
 export type RpcResponse =
+	| DesktopPlanResponse
 	// Protocol
 	| {
 			id?: string;

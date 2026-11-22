@@ -460,8 +460,8 @@ export interface ToolSession {
 	settings: Settings;
 	/** Plan mode state (if active) */
 	getPlanModeState?: () => PlanModeState | undefined;
-	/** Path of the session's active plan reference (e.g. `local://<title>.md`); defaults to `local://PLAN.md`. */
-	getPlanReferencePath?: () => string;
+	/** Session's active plan reference; null means no plan was approved. Defaults to `local://PLAN.md`. */
+	getPlanReferencePath?: () => string | null;
 	/** Goal mode state (if active or paused) */
 	getGoalModeState?: () => GoalModeState | undefined;
 	/** Goal runtime for the active agent session. */

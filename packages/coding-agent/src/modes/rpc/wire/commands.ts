@@ -99,6 +99,23 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 
 	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
 	{
+		name: "get_plan_state",
+		doc: "Read the selected branch’s Plan state on a Desktop-enabled Node host.",
+		result: "DesktopPlanState",
+	},
+	{
+		name: "set_plan_mode",
+		doc: "Enable read-only Plan mode or turn it off without executing a draft. Desktop-enabled Node hosts only.",
+		params: { enabled: "boolean" },
+		result: "DesktopPlanState",
+	},
+	{
+		name: "resolve_plan_review",
+		doc: "Refine or approve the pending Plan revision; an approved revision starts an agent-authored execution turn. Desktop-enabled Node hosts only.",
+		params: { reviewId: "string", choice: "DesktopPlanChoice" },
+		result: "DesktopPlanState",
+	},
+	{
 		name: "get_prompt_context",
 		doc: "Read the current prompt context without generating or running session hooks.",
 		result: "PromptContext",

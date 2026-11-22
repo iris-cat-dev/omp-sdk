@@ -35,6 +35,9 @@ import type {
 	RpcBtwRecordFrame,
 	RpcAvailableSlashCommand,
 	RpcCommand,
+	RpcDesktopPlanReview,
+	RpcDesktopPlanReviewFrame,
+	RpcDesktopPlanState,
 	RpcDictationFrame,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
@@ -243,6 +246,12 @@ function isRpcPromptResultFrame(value: unknown): value is RpcPromptResultFrame {
 	return value.type === "prompt_result" && typeof value.agentInvoked === "boolean";
 }
 
+function isRpcDesktopPlanReviewFrame(value: unknown): value is RpcDesktopPlanReviewFrame {
+	if (!isRecord(value) || value.type !== "plan_review" || !isRecord(value.review)) return false;
+	const { id, title, path, markdown } = value.review;
+	return typeof id === "string" && typeof title === "string" && typeof path === "string" && typeof markdown === "string";
+}
+
 function isRpcSessionSettledFrame(value: unknown): value is RpcSessionSettledFrame {
 	return isRecord(value) && value.type === "session_settled";
 }
@@ -352,6 +361,7 @@ export class RpcClient {
 	#btwDeltaListeners = new Set<(frame: RpcBtwDeltaFrame) => void>();
 	#btwRecordListeners = new Set<(record: RpcBtwHistoryRecord) => void>();
 	#promptResultListeners = new Set<RpcPromptResultListener>();
+	#desktopPlanReviewListeners = new Set<(review: RpcDesktopPlanReview) => void>();
 	#sessionSettledListeners = new Set<RpcSessionSettledListener>();
 	#liveListeners = new Set<RpcLiveListener>();
 	#dictationListeners = new Set<RpcDictationListener>();
@@ -686,6 +696,12 @@ export class RpcClient {
 		};
 	}
 
+	/** Subscribe to a newly submitted review on a Desktop-enabled Node host. */
+	onDesktopPlanReview(listener: (review: RpcDesktopPlanReview) => void): () => void {
+		this.#desktopPlanReviewListeners.add(listener);
+		return () => this.#desktopPlanReviewListeners.delete(listener);
+	}
+
 	/**
 	 * Subscribe to `session_settled`: the session is done — the agent yielded and no
 	 * background work remains that could inject messages and wake it again.
@@ -895,6 +911,18 @@ export class RpcClient {
 			token_budget: options?.tokenBudget,
 		});
 		return this.#getData(response);
+	}
+
+	async getDesktopPlanState(): Promise<RpcDesktopPlanState> {
+		return this.#getData(await this.#send({ type: "get_plan_state" }));
+	}
+
+	async setDesktopPlanMode(enabled: boolean): Promise<RpcDesktopPlanState> {
+		return this.#getData(await this.#send({ type: "set_plan_mode", enabled }));
+	}
+
+	async resolveDesktopPlanReview(reviewId: string, choice: "approve" | "refine"): Promise<RpcDesktopPlanState> {
+		return this.#getData(await this.#send({ type: "resolve_plan_review", reviewId, choice }));
 	}
 
 	/**
@@ -1660,6 +1688,11 @@ export class RpcClient {
 			for (const listener of this.#sessionSettledListeners) {
 				listener();
 			}
+			return;
+		}
+
+		if (isRpcDesktopPlanReviewFrame(data)) {
+			for (const listener of this.#desktopPlanReviewListeners) listener(data.review);
 			return;
 		}
 

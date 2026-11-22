@@ -221,10 +221,10 @@ import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
 import { computeNonMessageTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
-import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
+import { type PlanApprovalDetails, resolveApprovedPlan, type ResolvedApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile, resolvePlanFilePath } from "../plan-mode/plan-files";
 import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
-import type { PlanModeState } from "../plan-mode/state";
+import { isDesktopPlanTool, type PlanModeState } from "../plan-mode/state";
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import anthropicUsageWrapUpPrompt from "../prompts/system/anthropic-usage-wrap-up.md" with { type: "text" };
@@ -1040,6 +1040,8 @@ export class AgentSession implements SettingsScope {
 	/** A single model-only notebook reminder queued for the current prompt generation. */
 	#experimentalContextNotesReminder: { prompt: string; generation: number } | undefined;
 	#planModeState: PlanModeState | undefined;
+	// Undefined for other hosts; null for a Desktop branch without an approved plan.
+	#desktopPlanReferencePath: string | null | undefined;
 	#vibeModeState: VibeModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
@@ -1947,20 +1949,46 @@ export class AgentSession implements SettingsScope {
 
 	/** Validate the active plan artifact and shape an `xd://propose` result for review-mode hosts. */
 	async preparePlanForReview(title: string): Promise<AgentToolResult<PlanApprovalDetails>> {
-		const state = this.getPlanModeState();
-		if (!state?.enabled) {
-			throw new ToolError("Plan mode is not active.");
-		}
-		const { planFilePath, title: resolvedTitle } = await resolveApprovedPlan({
-			suppliedTitle: title,
-			statePlanFilePath: state.planFilePath,
-			readPlan: url => this.#readPlanFile(url),
-			listPlanFiles: () => this.#listPlanFiles(),
-		});
+		const { planFilePath, title: resolvedTitle } = await this.resolvePlanProposal(title);
 		return {
 			content: [{ type: "text", text: "Plan ready for review." }],
 			details: { planFilePath, title: resolvedTitle, planExists: true },
 		};
+	}
+
+	async resolvePlanProposal(title: string): Promise<ResolvedApprovedPlan> {
+		const state = this.getPlanModeState();
+		if (!state?.enabled) throw new ToolError("Plan mode is not active.");
+		const desktop = state.desktop !== undefined;
+		return resolveApprovedPlan({
+			suppliedTitle: title,
+			statePlanFilePath: desktop && title ? "" : state.planFilePath,
+			readPlan: desktop
+				? async url => {
+						if (!/^local:\/\/[\w-]+-plan\.md$/i.test(url)) return null;
+						const file = await InternalUrlRouter.instance().requireLocal(
+							url,
+							"review plan",
+							{ localProtocolOptions: this.#localProtocolOptions() },
+							{ create: true },
+						);
+						const markdown = await this.#readPlanFile(file);
+						return markdown?.trim() ? markdown : null;
+					}
+				: url => this.#readPlanFile(url),
+			listPlanFiles: !desktop || !title ? () => this.#listPlanFiles() : undefined,
+		});
+	}
+
+	async storeApprovedPlanSnapshot(planFilePath: string, markdown: string): Promise<void> {
+		const file = await InternalUrlRouter.instance().requireLocal(
+			planFilePath,
+			"store approved plan",
+			{ localProtocolOptions: this.#localProtocolOptions() },
+			{ create: true },
+		);
+		await fs.promises.mkdir(path.dirname(file), { recursive: true });
+		await writeArtifact(file, markdown);
 	}
 
 	async #readPlanFile(planFilePath: string): Promise<string | null> {
@@ -3257,9 +3285,13 @@ export class AgentSession implements SettingsScope {
 		return this.#planProposalHandler;
 	}
 
-	/** The handler can ask the user to approve the plan mid-turn (ACP), so it runs as a {@link waitForUser}. */
-	setPlanProposalHandler(handler: PlanProposalHandler | null): void {
-		this.#planProposalHandler = handler ? title => this.waitForUser(() => handler(title)) : undefined;
+	/** ACP may wait mid-turn for a user; Desktop validates the artifact then yields to its host. */
+	setPlanProposalHandler(handler: PlanProposalHandler | null, options?: { waitForUser: false }): void {
+		this.#planProposalHandler = !handler
+			? undefined
+			: options?.waitForUser === false
+				? handler
+				: title => this.waitForUser(() => handler(title));
 	}
 
 	#sessionBeforeSwitchReconciler: (() => Promise<void>) | undefined;
@@ -5719,6 +5751,15 @@ export class AgentSession implements SettingsScope {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
+		const desktopPlan = this.#planModeState?.desktop;
+		if (
+			desktopPlan?.awaitingReview &&
+			!ctx.isError &&
+			writeDeviceDispatch(ctx.toolCall.name, ctx.result)?.tool === PROPOSE_DEVICE_NAME
+		) {
+			this.#yieldTerminationPending = true;
+			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+		}
 		return this.#ttsr.afterToolCall(ctx);
 	}
 	/**
@@ -5732,6 +5773,20 @@ export class AgentSession implements SettingsScope {
 	 * execution still emit there).
 	 */
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
+		const desktopPlan = this.#planModeState?.desktop;
+		if (desktopPlan && (!isDesktopPlanTool(ctx.tool.name) || !this.hasBuiltInTool(ctx.tool.name))) {
+			return { block: true, reason: "This tool is unavailable in read-only Plan mode." };
+		}
+		if (
+			desktopPlan &&
+			isProposeToolCall({ name: ctx.toolCall.name, arguments: ctx.args }) &&
+			ctx.assistantMessage.content.some(block => block.type === "toolCall" && block.name === "ask")
+		) {
+			return {
+				block: true,
+				reason: "Wait for the clarification answer. Update the plan to reflect it before submitting a new proposal.",
+			};
+		}
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
@@ -7825,6 +7880,24 @@ export class AgentSession implements SettingsScope {
 		this.#planReferencePath = path;
 	}
 
+	/** Desktop references only an approved snapshot, never an abandoned draft. */
+	setDesktopPlanReference(path: string | null): void {
+		this.#desktopPlanReferencePath = path;
+		if (!this.#planModeState?.enabled) this.#planReferencePath = path ?? "local://PLAN.md";
+		this.#planReferenceSent = false;
+	}
+
+	getOverallPlanReferencePath(): string | null {
+		return this.#desktopPlanReferencePath === undefined ? this.#planReferencePath : this.#desktopPlanReferencePath;
+	}
+
+	/** Historical Desktop planning instructions must not constrain a later execution turn. */
+	filterDesktopPlanContext(messages: AgentMessage[]): AgentMessage[] {
+		return this.#desktopPlanReferencePath !== undefined && !this.#planModeState?.enabled
+			? messages.filter(message => message.role !== "custom" || message.customType !== "plan-mode-context")
+			: messages;
+	}
+
 	getPlanReferencePath(): string {
 		return this.#planReferencePath;
 	}
@@ -8030,7 +8103,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	async #buildPlanReferenceMessage(): Promise<CustomMessage | null> {
 		if (this.#planModeState?.enabled) return null;
-		if (this.#planReferenceSent) return null;
+		if (this.#planReferenceSent || this.#desktopPlanReferencePath === null) return null;
 
 		const plan = await loadOverallPlanReference(this.#planReferencePath, this.#localProtocolOptions());
 		if (!plan) return null;
@@ -9997,6 +10070,7 @@ export class AgentSession implements SettingsScope {
 
 	/** Queue eligibility after the current abort barrier unwinds; also classifies agent_end. */
 	#canResumeQueuedMessages(): boolean {
+		if (this.#planModeState?.desktop?.awaitingReview) return false;
 		if (this.#userStopped) return false;
 		if (this.isRetrying) return false;
 		// An ACP client that defers agent-initiated turns owns turn
@@ -11840,6 +11914,7 @@ export class AgentSession implements SettingsScope {
 					previousSessionFile,
 				});
 			}
+			if (this.#desktopPlanReferencePath !== undefined) await this.#reconcileModeAfterTransition();
 
 			return true;
 		} finally {
@@ -12463,6 +12538,7 @@ export class AgentSession implements SettingsScope {
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		this.#checkpointState = undefined;
 		this.#pendingRewindReport = undefined;
+		if (this.#desktopPlanReferencePath !== undefined) await this.#reconcileModeAfterTransition();
 	}
 	/** Plan-mode decision affordances: `ask`, or plan approval via `write xd://propose`. */
 	#isPlanDecisionTool(toolCall: { name: string; arguments?: Record<string, unknown> }): boolean {
@@ -12514,6 +12590,7 @@ export class AgentSession implements SettingsScope {
 		this.#toolChoiceQueue.pushOnce("required", { label: "plan-mode-decision" });
 		const reminder = prompt.render(planModeToolDecisionReminderPrompt, {
 			askToolName: "ask",
+			writeToolName: "write",
 		});
 		const reminderMessage: Message = {
 			role: "developer",
@@ -14346,6 +14423,7 @@ export class AgentSession implements SettingsScope {
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		this.#branchSummaryAbortController = undefined;
+		if (this.#desktopPlanReferencePath !== undefined) await this.#reconcileModeAfterTransition();
 
 		// Report a committed `ask` re-answer so the interactive caller can resume
 		// the agent via `resumeAfterAskReanswer()` *after* rebuilding its

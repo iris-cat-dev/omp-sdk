@@ -71,6 +71,7 @@ import {
 } from "./plan-mode-guard";
 import { decodeUtf8Text } from "./read-format";
 import { routeReadThroughBridge } from "./read-summary";
+import { isProposeToolCall } from "./resolve";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 
 import {
@@ -933,6 +934,13 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const path = recovered.path;
 		const target = router.writeTarget(path);
 		const policy = target?.spec.write;
+		if (
+			this.session.getPlanModeState?.()?.desktop &&
+			policy?.scope === "device" &&
+			!isProposeToolCall({ name: "write", arguments: { path } })
+		) {
+			throw new ToolError("Plan mode: only xd://propose can be written as a device.");
+		}
 		if (rawContent === undefined && !(target && policy?.contentOptional?.(target.url))) {
 			throw new ToolError(`content is required for ${path}.`);
 		}

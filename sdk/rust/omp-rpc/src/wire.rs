@@ -2865,6 +2865,42 @@ impl GoalStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DesktopPlanChoice {
+	#[serde(rename = "approve")]
+	Approve,
+	#[serde(rename = "refine")]
+	Refine,
+}
+
+impl DesktopPlanChoice {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Approve => "approve",
+			Self::Refine => "refine",
+		}
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesktopPlanReview {
+	pub id: String,
+	pub title: String,
+	pub path: String,
+	pub markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesktopPlanState {
+	pub enabled: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub review: Option<DesktopPlanReview>,
+	/// The approval committed but its execution turn could not start.
+	#[serde(rename = "executionError", default, skip_serializing_if = "Option::is_none")]
+	pub execution_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SlashCommandSource {
 	#[serde(rename = "builtin")]
 	Builtin,
@@ -4314,6 +4350,12 @@ pub struct PromptResultEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionSettledEvent {}
 
+/// A new Desktop plan is ready for review; emitted after the planning turn yields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesktopPlanReviewEvent {
+	pub review: DesktopPlanReview,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionError {
 	#[serde(rename = "extensionPath")]
@@ -5173,6 +5215,8 @@ pub enum RpcNotification {
 	PromptResult(PromptResultEvent),
 	/// The session went quiet: the last run yielded and no background work can wake it.
 	SessionSettled(SessionSettledEvent),
+	/// A new Desktop plan is ready for review; emitted after the planning turn yields.
+	PlanReview(DesktopPlanReviewEvent),
 	ExtensionError(ExtensionError),
 	/// Extension UI request, discriminated by `method`.
 	ExtensionUiRequest(ExtensionUiRequest),
@@ -5222,6 +5266,7 @@ impl RpcNotification {
 			Some("ready") => |value| serde_json::from_value(value).map(Self::Ready),
 			Some("prompt_result") => |value| serde_json::from_value(value).map(Self::PromptResult),
 			Some("session_settled") => |value| serde_json::from_value(value).map(Self::SessionSettled),
+			Some("plan_review") => |value| serde_json::from_value(value).map(Self::PlanReview),
 			Some("extension_error") => |value| serde_json::from_value(value).map(Self::ExtensionError),
 			Some("extension_ui_request") => |value| serde_json::from_value(value).map(Self::ExtensionUiRequest),
 			Some("available_commands_update") => |value| serde_json::from_value(value).map(Self::AvailableCommandsUpdate),
@@ -5254,6 +5299,7 @@ impl Serialize for RpcNotification {
 			Self::Ready(member) => serialize_tagged(member, &[("type", "ready")], serializer),
 			Self::PromptResult(member) => serialize_tagged(member, &[("type", "prompt_result")], serializer),
 			Self::SessionSettled(member) => serialize_tagged(member, &[("type", "session_settled")], serializer),
+			Self::PlanReview(member) => serialize_tagged(member, &[("type", "plan_review")], serializer),
 			Self::ExtensionError(member) => serialize_tagged(member, &[("type", "extension_error")], serializer),
 			Self::ExtensionUiRequest(member) => member.serialize(serializer),
 			Self::AvailableCommandsUpdate(member) => serialize_tagged(member, &[("type", "available_commands_update")], serializer),
@@ -5304,7 +5350,7 @@ impl RpcServerFrame {
 		let decode: fn(Value) -> Result<Self, serde_json::Error> = match value.get("type").and_then(Value::as_str) {
 			Some("response") => |value| serde_json::from_value(value).map(Self::Response),
 			Some("host_tool_call" | "host_tool_cancel" | "host_uri_request" | "host_uri_cancel") => |value| serde_json::from_value(value).map(Self::RpcHostRequest),
-			Some("ready" | "prompt_result" | "session_settled" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "dictation_state" | "dictation_transcript" | "dictation_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "manual_compaction_start" | "manual_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
+			Some("ready" | "prompt_result" | "session_settled" | "plan_review" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "dictation_state" | "dictation_transcript" | "dictation_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "manual_compaction_start" | "manual_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
 			_ => |value| Ok(Self::Unknown(value)),
 		};
 		decode(value)
@@ -5407,6 +5453,18 @@ pub struct OpenSessionParams {
 	pub provider: Option<String>,
 	#[serde(rename = "modelId", default, skip_serializing_if = "Option::is_none")]
 	pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetPlanModeParams {
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvePlanReviewParams {
+	#[serde(rename = "reviewId")]
+	pub review_id: String,
+	pub choice: DesktopPlanChoice,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6700,6 +6758,54 @@ impl Command for GetStateCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SessionState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Read the selected branch’s Plan state on a Desktop-enabled Node host.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetPlanStateCommand {}
+
+impl Command for GetPlanStateCommand {
+	const NAME: &'static str = "get_plan_state";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = DesktopPlanState;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<DesktopPlanState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Enable read-only Plan mode or turn it off without executing a draft. Desktop-enabled Node hosts only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetPlanModeCommand {
+	pub enabled: bool,
+}
+
+impl Command for SetPlanModeCommand {
+	const NAME: &'static str = "set_plan_mode";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = DesktopPlanState;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<DesktopPlanState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Refine or approve the pending Plan revision; an approved revision starts an agent-authored execution turn. Desktop-enabled Node hosts only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvePlanReviewCommand {
+	#[serde(rename = "reviewId")]
+	pub review_id: String,
+	pub choice: DesktopPlanChoice,
+}
+
+impl Command for ResolvePlanReviewCommand {
+	const NAME: &'static str = "resolve_plan_review";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = DesktopPlanState;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<DesktopPlanState>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

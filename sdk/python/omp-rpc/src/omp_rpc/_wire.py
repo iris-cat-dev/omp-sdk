@@ -113,6 +113,11 @@ _GOAL_STATUS_VALUES: Final[frozenset[str]] = frozenset({"active", "paused", "bud
 _decode_goal_status = cast("Decoder[GoalStatus]", literal(_GOAL_STATUS_VALUES))
 
 
+DesktopPlanChoice: TypeAlias = Literal["approve", "refine"]
+_DESKTOP_PLAN_CHOICE_VALUES: Final[frozenset[str]] = frozenset({"approve", "refine"})
+_decode_desktop_plan_choice = cast("Decoder[DesktopPlanChoice]", literal(_DESKTOP_PLAN_CHOICE_VALUES))
+
+
 SlashCommandSource: TypeAlias = Literal["builtin", "skill", "extension", "custom", "mcp_prompt", "file"]
 _SLASH_COMMAND_SOURCE_VALUES: Final[frozenset[str]] = frozenset({"builtin", "skill", "extension", "custom", "mcp_prompt", "file"})
 _decode_slash_command_source = cast("Decoder[SlashCommandSource]", literal(_SLASH_COMMAND_SOURCE_VALUES))
@@ -571,6 +576,22 @@ class ProxyPolicy:
     default: ProxyRoute | None = None
     providers: dict[str, ProxyRoute] | None = None
     no_proxy: tuple[str, ...] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class DesktopPlanReview:
+    id: str
+    title: str
+    path: str
+    markdown: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class DesktopPlanState:
+    enabled: bool
+    review: DesktopPlanReview | None = None
+    execution_error: str | None = None
+    """The approval committed but its execution turn could not start."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1390,6 +1411,13 @@ class SessionSettledEvent:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class DesktopPlanReviewEvent:
+    """A new Desktop plan is ready for review; emitted after the planning turn yields."""
+    type: Literal["plan_review"] = "plan_review"
+    review: DesktopPlanReview
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class ExtensionError:
     type: Literal["extension_error"] = "extension_error"
     extension_path: str
@@ -1800,7 +1828,7 @@ RpcAgentEvent: TypeAlias = AgentStartEvent | AgentEndEvent | TurnStartEvent | Tu
 """A session event, discriminated by `type`; `set_event_filter` selects which are sent."""
 
 
-RpcNotification: TypeAlias = ReadyEvent | PromptResultEvent | SessionSettledEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | DictationStateEvent | DictationTranscriptEvent | DictationEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent | UnknownNotification
+RpcNotification: TypeAlias = ReadyEvent | PromptResultEvent | SessionSettledEvent | DesktopPlanReviewEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | DictationStateEvent | DictationTranscriptEvent | DictationEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent | UnknownNotification
 """Unsolicited outbound frame (everything except responses and host tool/URI requests), discriminated by `type`."""
 
 
@@ -2035,6 +2063,25 @@ def parse_proxy_policy(value: object, path: str = "ProxyPolicy") -> ProxyPolicy:
         default=optional(payload, "default", parse_proxy_route, path),
         providers=optional(payload, "providers", record(parse_proxy_route), path),
         no_proxy=optional(payload, "noProxy", array(decode_str), path),
+    )
+
+
+def parse_desktop_plan_review(value: object, path: str = "DesktopPlanReview") -> DesktopPlanReview:
+    payload = expect_object(value, path)
+    return DesktopPlanReview(
+        id=required(payload, "id", decode_str, path),
+        title=required(payload, "title", decode_str, path),
+        path=required(payload, "path", decode_str, path),
+        markdown=required(payload, "markdown", decode_str, path),
+    )
+
+
+def parse_desktop_plan_state(value: object, path: str = "DesktopPlanState") -> DesktopPlanState:
+    payload = expect_object(value, path)
+    return DesktopPlanState(
+        enabled=required(payload, "enabled", decode_bool, path),
+        review=optional(payload, "review", parse_desktop_plan_review, path),
+        execution_error=optional(payload, "executionError", decode_str, path),
     )
 
 
@@ -2947,6 +2994,14 @@ def parse_session_settled_event(value: object, path: str = "SessionSettledEvent"
     )
 
 
+def parse_desktop_plan_review_event(value: object, path: str = "DesktopPlanReviewEvent") -> DesktopPlanReviewEvent:
+    payload = expect_object(value, path)
+    required(payload, "type", cast('Decoder[Literal["plan_review"]]', literal(frozenset({"plan_review"}))), path)
+    return DesktopPlanReviewEvent(
+        review=required(payload, "review", parse_desktop_plan_review, path),
+    )
+
+
 def parse_extension_error(value: object, path: str = "ExtensionError") -> ExtensionError:
     payload = expect_object(value, path)
     required(payload, "type", cast('Decoder[Literal["extension_error"]]', literal(frozenset({"extension_error"}))), path)
@@ -3467,6 +3522,7 @@ _RPC_NOTIFICATION_CASES: Final[dict[str, Decoder[RpcNotification]]] = {
         "ready": parse_ready_event,
         "prompt_result": parse_prompt_result_event,
         "session_settled": parse_session_settled_event,
+        "plan_review": parse_desktop_plan_review_event,
         "extension_error": parse_extension_error,
         "extension_ui_request": parse_extension_ui_request,
         "available_commands_update": parse_available_commands_update_event,
@@ -3597,6 +3653,24 @@ class WireClient:
         """Snapshot the session state."""
         params: dict[str, object] = {}
         return parse_session_state(self._command("get_state", params), "get_state")
+
+    def get_plan_state(self) -> DesktopPlanState:
+        """Read the selected branch’s Plan state on a Desktop-enabled Node host."""
+        params: dict[str, object] = {}
+        return parse_desktop_plan_state(self._command("get_plan_state", params), "get_plan_state")
+
+    def set_plan_mode(self, enabled: bool) -> DesktopPlanState:
+        """Enable read-only Plan mode or turn it off without executing a draft. Desktop-enabled Node hosts only."""
+        params: dict[str, object] = {}
+        params["enabled"] = enabled
+        return parse_desktop_plan_state(self._command("set_plan_mode", params), "set_plan_mode")
+
+    def resolve_plan_review(self, review_id: str, choice: DesktopPlanChoice) -> DesktopPlanState:
+        """Refine or approve the pending Plan revision; an approved revision starts an agent-authored execution turn. Desktop-enabled Node hosts only."""
+        params: dict[str, object] = {}
+        params["reviewId"] = review_id
+        params["choice"] = choice
+        return parse_desktop_plan_state(self._command("resolve_plan_review", params), "resolve_plan_review")
 
     def get_prompt_context(self) -> PromptContext:
         """Read the current prompt context without generating or running session hooks."""
@@ -4028,6 +4102,10 @@ class WireClient:
         """Subscribe to `session_settled`: The session went quiet: the last run yielded and no background work can wake it."""
         return self._listen("session_settled", listener)
 
+    def on_plan_review(self, listener: Callable[[DesktopPlanReviewEvent], None]) -> Callable[[], None]:
+        """Subscribe to `plan_review`: A new Desktop plan is ready for review; emitted after the planning turn yields."""
+        return self._listen("plan_review", listener)
+
     def on_extension_error(self, listener: Callable[[ExtensionError], None]) -> Callable[[], None]:
         """Subscribe to `extension_error` frames."""
         return self._listen("extension_error", listener)
@@ -4303,6 +4381,10 @@ __all__ = [
     "ConfirmUiRequest",
     "ContextUsage",
     "CustomMessage",
+    "DesktopPlanChoice",
+    "DesktopPlanReview",
+    "DesktopPlanReviewEvent",
+    "DesktopPlanState",
     "DeveloperMessage",
     "DictationEndEvent",
     "DictationStateEvent",
@@ -4506,6 +4588,9 @@ __all__ = [
     "parse_confirm_ui_request",
     "parse_context_usage",
     "parse_custom_message",
+    "parse_desktop_plan_review",
+    "parse_desktop_plan_review_event",
+    "parse_desktop_plan_state",
     "parse_developer_message",
     "parse_dictation_end_event",
     "parse_dictation_state_event",

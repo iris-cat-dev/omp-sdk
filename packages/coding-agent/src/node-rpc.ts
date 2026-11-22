@@ -50,6 +50,8 @@ export interface NodeRpcHostOptions {
 	configFiles?: string[];
 	desktopPluginPrompts?: boolean;
 	sandbox?: AgentSandbox;
+	/** Enable Desktop's typed native Plan review for this nonsandbox session. */
+	desktopPlanMode?: boolean;
 	/** Trusted Desktop local-model provider adapter, never a model extension. */
 	modelBridgeExtension?: string;
 	/** Trusted Desktop native image settings adapter; no model extension APIs. */
@@ -241,6 +243,7 @@ export async function startNodeRpcHost(options: NodeRpcHostOptions): Promise<nev
 			input,
 			setToolUIContext: options.protocolMode === "rpc-ui" ? result.setToolUIContext : undefined,
 			headless: parsed.noUi,
+			desktopPlanMode: options.desktopPlanMode === true && !options.sandbox,
 			mcpManager: result.mcpManager,
 			subagentEventBus: result.subagentEventBus,
 			onCustomFrame(frame){
