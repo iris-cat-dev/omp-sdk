@@ -20,6 +20,8 @@
 
 ### Fixed
 
+- Sent OpenAI Codex base instructions as a leading `developer` input item tagged `model.base_instructions` with a deterministic `msg_<uuidv5>` item id and omitted top-level `instructions` (matching `codex-rs` 0.162+), restoring GPT-6.2 prompt caching on Codex.
+- Sent GPT-6.2+ system prompts as leading `developer` input items on all OpenAI Responses hosts (including third-party proxies) via `compat.uncachedInstructions` so instructions are prompt-cached instead of billed uncached every turn.
 - Preserved explicit per-request proxy routing when host `globalThis.fetch` wrappers layer over `installProxyFetch()`.
 - Cursor streams can hand a settled tool batch back to the host for compaction without retrying the oversized checkpoint.
 - Fixed Cursor turns receiving hook-added context as the user's request and losing the turn's server records on continuation ([#19156](https://github.com/can1357/oh-my-pi/pull/19156) by [@anzhen-tech](https://github.com/anzhen-tech)).

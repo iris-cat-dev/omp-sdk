@@ -6,11 +6,11 @@ import type { FetchImpl, ModelSpec } from "../types";
 import { discoveryFetch } from "../utils";
 import {
 	CODEX_BASE_URL,
-	CODEX_CLIENT_VERSION,
 	isOfficialCodexApiUrl,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "../wire/codex";
+import { getCodexClientVersion } from "../wire/codex-version";
 
 const OFFICIAL_MODEL_LIST_PATH = "/codex/models";
 const DEFAULT_MODEL_LIST_PATHS = [OFFICIAL_MODEL_LIST_PATH, "/models"] as const;
@@ -137,7 +137,7 @@ export async function fetchCodexModels(options: CodexModelDiscoveryOptions): Pro
 	const fetchFn = discoveryFetch(options.fetchFn);
 	const baseUrl = normalizeBaseUrl(options.baseUrl);
 	const paths = normalizePaths(options.paths, baseUrl);
-	const clientVersion = normalizeClientVersion(options.clientVersion) ?? CODEX_CLIENT_VERSION;
+	const clientVersion = normalizeClientVersion(options.clientVersion) ?? getCodexClientVersion();
 	const headers = buildCodexHeaders(options, clientVersion);
 
 	let sawSuccessfulResponse = false;

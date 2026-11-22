@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added portable `runtime.randomUUIDv5` (RFC 4122 SHA-1 UUIDv5 across Node.js and Bun) and `getCodexClientVersionPath()` for XDG cache-scoped Codex client version storage.
 - Added Node.js runtime adapters for shared file, process, HTTP, hashing, parsing, and SQLite operations while retaining native Bun implementations.
 
 ### Changed

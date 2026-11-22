@@ -1748,10 +1748,11 @@ describe("Responses Lite remote compaction", () => {
 			strategy: "memento",
 		});
 		expect(captured?.body.input?.[0]).toEqual({ type: "additional_tools", role: "developer", tools: [] });
-		expect(captured?.body.input?.[1]).toEqual({
+		expect(captured?.body.input?.[1]).toMatchObject({
 			type: "message",
 			role: "developer",
 			content: [{ type: "input_text", text: "compact instructions" }],
+			internal_chat_message_metadata_passthrough: { content_item_kinds: ["model.base_instructions"] },
 		});
 	});
 
@@ -1797,12 +1798,43 @@ describe("Responses Lite remote compaction", () => {
 			strategy: "memento",
 		});
 		expect(captured?.body.input?.[0]).toEqual({ type: "additional_tools", role: "developer", tools: [] });
-		expect(captured?.body.input?.[1]).toEqual({
+		expect(captured?.body.input?.[1]).toMatchObject({
 			type: "message",
 			role: "developer",
 			content: [{ type: "input_text", text: "compact instructions" }],
+			internal_chat_message_metadata_passthrough: { content_item_kinds: ["model.base_instructions"] },
 		});
 		expect(captured?.body.input?.at(-1)).toEqual({ type: "compaction_trigger" });
+	});
+
+	test("V2 compaction moves Codex instructions to input without leaking Codex passthrough onto OpenAI Responses", () => {
+		const codexModel = makeCodexLiteModel({ useResponsesLite: false });
+		const codexRequest = buildCompactionV2Request(
+			codexModel,
+			[{ type: "message", role: "user", content: [{ type: "input_text", text: "real user" }] }],
+			"compact instructions",
+			{ sessionId: "thread-1" },
+		);
+		expect(codexRequest.body.instructions).toBeUndefined();
+		expect(codexRequest.input[0]).toMatchObject({
+			role: "developer",
+			content: [{ type: "input_text", text: "compact instructions" }],
+			internal_chat_message_metadata_passthrough: { content_item_kinds: ["model.base_instructions"] },
+		});
+
+		const openAiModel = makeOpenAiModel({
+			remoteCompaction: { enabled: true, v2StreamingEnabled: true },
+		});
+		const openAiRequest = buildCompactionV2Request(
+			openAiModel,
+			[{ type: "message", role: "user", content: [{ type: "input_text", text: "real user" }] }],
+			"compact instructions",
+			{ sessionId: "thread-1" },
+		);
+		expect(openAiRequest.body.instructions).toBe("compact instructions");
+		expect(openAiRequest.body.input).toEqual([
+			{ type: "message", role: "user", content: [{ type: "input_text", text: "real user" }] },
+		]);
 	});
 
 	test.each([false, true])(
@@ -1928,7 +1960,11 @@ describe("Responses Lite remote compaction", () => {
 			expect(webSocket.sockets).toHaveLength(2);
 			expect(webSocket.sockets[0]?.sent).toHaveLength(1);
 			expect(webSocket.sockets[1]?.sent).toHaveLength(1);
-			expect(liveRequest?.instructions).toBe("You are a helpful assistant.");
+			expect(liveRequest?.instructions).toBeUndefined();
+			expect(Array.isArray(liveRequest?.input) ? liveRequest.input[0] : undefined).toMatchObject({
+				role: "developer",
+				content: [{ type: "input_text", text: "You are a helpful assistant." }],
+			});
 			expect(liveRequest?.parallel_tool_calls).toBeUndefined();
 			expect(compactionRequest?.type).toBe("response.create");
 			expect(compactionRequest?.instructions).toBeUndefined();

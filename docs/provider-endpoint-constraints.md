@@ -65,6 +65,10 @@ Responses request shape is its own dialect:
 
 - uses `input`, `instructions`, `store`, `prompt_cache_key`, optional
   `previous_response_id`, and `max_output_tokens`
+- models with `compat.uncachedInstructions` (GPT-6.2+, rule-owned via
+  `uncached-instructions` for `revision ">=6.2 <10"`) never prompt-cache
+  top-level `instructions`; send system prompts as leading `developer` input
+  items on every host, third-party proxies included
 - can default official OpenAI requests to stateful chaining with
   `previous_response_id` plus `store: true`
 - third-party Responses proxies may reject native reasoning history, encrypted
@@ -88,6 +92,14 @@ Codex is not plain Responses with a different URL. Keep these as Codex transport
 policy:
 
 - Codex account headers and beta headers
+- runtime-resolved Codex client version (`getCodexClientVersion()`), cached
+  under XDG cache (`codex-client-version.json`) with `CODEX_CLIENT_VERSION` as
+  the floor
+- base instructions moved out of top-level `instructions` into a leading
+  `developer` input item tagged `model.base_instructions` with deterministic
+  `msg_<uuidv5(uuidv5(OID, thread), text)>` id (shared across normal turns,
+  `/responses/compact`, and Codex V2 compaction; never applied to non-Codex
+  Responses V2 compaction)
 - `x-codex-turn-state` and `x-models-etag`
 - optional websocket transport plus SSE fallback
 - `responsesLite`

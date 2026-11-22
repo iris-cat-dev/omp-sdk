@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added runtime Codex client version resolution (`getCodexClientVersion()`), refreshing from `@openai/codex` `latest` into the XDG cache directory (`codex-client-version.json`) with `CODEX_CLIENT_VERSION` as the floor.
+- Added the `uncached-instructions` Responses compat axis (`revision ">=6.2 <10"`) so GPT-6.2+ models send system prompts inline as `developer` items on all hosts, including third-party proxies.
 - Synced catalog data and compatible provider rules from upstream `18.22.2`, including Gemini 4 Hydrogen and Carbon, Claude Fable and Mythos 5.2, GPT-6.2 Astra and Sol, Kimi K3.1 Pro, and Muse Ember. Desktop retains its local runners and retired-provider exclusions; new ACP and decision transports are not part of this sync.
 - Added bundled Cursor lanes from live `AvailableModels` metadata and updated `providers/cursor.kdl` with verified Cursor context-window floors (`gemini-4-*`, `gemini-3.5-flash`, `gemini-3.8-flash`, `glm-5p3*`, `muse-wonder-1.0*`, `claude-haiku-5.5`), effort ladders (`gemini-4-*`, `gemini-3.8-flash`, `claude-fable-5-2`), image inputs, and official API rate cards (`gemini-4-hydrogen`, `gemini-3.7/3.8-flash`, `gemini-2.5-flash`, `claude-fable-5-2`, `claude-sonnet-5-5`, `claude-haiku-4-5`, `glm-5p3*`, `muse-wonder-1.0*`).
 

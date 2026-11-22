@@ -3,12 +3,8 @@ import type { ModelWebSocket } from "@oh-my-pi/pi-ai/utils/model-websocket";
 import { runtime } from "@oh-my-pi/pi-utils/runtime";
 import { type AuthStorage, type OAuthAccess, withOAuthAccess } from "@oh-my-pi/pi-ai";
 import { getProxyForUrl, wrapFetchForProxy } from "@oh-my-pi/pi-ai/utils/proxy";
-import {
-	CODEX_BASE_URL,
-	CODEX_CLIENT_VERSION,
-	getCodexAccountId,
-	OPENAI_HEADERS,
-} from "@oh-my-pi/pi-catalog/wire/codex";
+import { CODEX_BASE_URL, getCodexAccountId, OPENAI_HEADERS } from "@oh-my-pi/pi-catalog/wire/codex";
+import { getCodexClientVersion } from "@oh-my-pi/pi-catalog/wire/codex-version";
 import { LiveWebRtcPeer } from "@oh-my-pi/pi-natives";
 import { assertNativeCapability } from "../native-capabilities";
 import { generateCodexAttestation } from "./attestation";
@@ -96,10 +92,10 @@ function liveSessionHeaders(
 	const headers: Record<string, string> = {
 		Authorization: `Bearer ${access.accessToken}`,
 		"OpenAI-Alpha": "quicksilver=v2",
-		"User-Agent": `Codex Desktop/${CODEX_CLIENT_VERSION}`,
+		"User-Agent": `Codex Desktop/${getCodexClientVersion()}`,
 		"x-session-id": realtimeSessionId,
 		[OPENAI_HEADERS.ORIGINATOR]: LIVE_ORIGINATOR,
-		[OPENAI_HEADERS.VERSION]: CODEX_CLIENT_VERSION,
+		[OPENAI_HEADERS.VERSION]: getCodexClientVersion(),
 		[OPENAI_HEADERS.SCOPED_SESSION_ID]: sessionId,
 		[OPENAI_HEADERS.THREAD_ID]: sessionId,
 	};

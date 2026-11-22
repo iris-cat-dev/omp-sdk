@@ -2,10 +2,11 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { NodeCryptoHasher, NodeSHA256 } from "../src/runtime-crypto";
+import { NodeCryptoHasher, NodeSHA256, nodeRandomUUIDv5 } from "../src/runtime-crypto";
 import { NodeRuntimeFile, writeNodeFile, fileBlob } from "../src/runtime-file";
 import { crc32, wyhash, xxHash32, xxHash64 } from "../src/runtime-hash";
 import { parseJsonlChunk } from "../src/runtime-parsers";
+import { runtime } from "../src/runtime";
 
 describe("portable runtime boundaries", () => {
 	it("preserves Bun identity hashes across short, block and Unicode boundaries", () => {
@@ -99,5 +100,34 @@ describe("portable runtime boundaries", () => {
 		expect(malformed.read).toBe(9);
 		expect(malformed.error).toBeInstanceOf(SyntaxError);
 		expect(parseJsonlChunk('{"ok":true}').done).toBeTrue();
+	});
+
+	it("matches Bun.randomUUIDv5 across predefined, UUID, buffer namespaces and encodings", () => {
+		// codex-rs base_instructions vector: uuid5(uuid5(NAMESPACE_OID, "thread-1"), "sys")
+		const threadUuid = nodeRandomUUIDv5("thread-1", "oid");
+		expect(threadUuid).toBe(Bun.randomUUIDv5("thread-1", "oid"));
+		expect(nodeRandomUUIDv5("sys", threadUuid)).toBe("6e6ddc8f-32b3-592b-a5b6-b5f2aface174");
+		expect(runtime.randomUUIDv5("sys", runtime.randomUUIDv5("thread-1", "oid"))).toBe(
+			"6e6ddc8f-32b3-592b-a5b6-b5f2aface174",
+		);
+
+		for (const ns of ["dns", "url", "oid", "x500"] as const) {
+			for (const name of ["", "example.com", "路径/凭据🙂"]) {
+				expect(nodeRandomUUIDv5(name, ns)).toBe(Bun.randomUUIDv5(name, ns));
+				expect(nodeRandomUUIDv5(name, ns, "base64")).toBe(Bun.randomUUIDv5(name, ns, "base64"));
+				expect(nodeRandomUUIDv5(name, ns, "base64url")).toBe(Bun.randomUUIDv5(name, ns, "base64url"));
+				expect(nodeRandomUUIDv5(name, ns, "buffer")).toEqual(Bun.randomUUIDv5(name, ns, "buffer"));
+			}
+		}
+
+		const nsBytes = Buffer.from("6ba7b8129dad11d180b400c04fd430c8", "hex");
+		expect(nodeRandomUUIDv5(new TextEncoder().encode("sys"), nsBytes)).toBe(
+			Bun.randomUUIDv5(new TextEncoder().encode("sys"), nsBytes),
+		);
+		expect(nodeRandomUUIDv5("sys", "6BA7B812-9DAD-11D1-80B4-00C04FD430C8")).toBe(
+			Bun.randomUUIDv5("sys", "6BA7B812-9DAD-11D1-80B4-00C04FD430C8"),
+		);
+		expect(() => nodeRandomUUIDv5("sys", "not-a-uuid")).toThrow(TypeError);
+		expect(() => nodeRandomUUIDv5("sys", new Uint8Array(15))).toThrow(TypeError);
 	});
 });

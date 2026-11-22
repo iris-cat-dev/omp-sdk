@@ -7,7 +7,14 @@ import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
 import { sleepLong } from "./async";
 import { isExecutable } from "./executable";
-import { NodeCryptoHasher, NodeSHA256 } from "./runtime-crypto";
+import {
+	NodeCryptoHasher,
+	NodeSHA256,
+	nodeRandomUUIDv5,
+	type UUIDv5Encoding,
+	type UUIDv5Input,
+	type UUIDv5Namespace,
+} from "./runtime-crypto";
 import {
 	NodeRuntimeFile,
 	writeNodeFile,
@@ -106,6 +113,21 @@ function randomUUIDv7(encoding?: "hex" | "base64" | "base64url" | "buffer", time
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+function randomUUIDv5(
+	name: UUIDv5Input,
+	namespace: UUIDv5Namespace,
+	encoding?: UUIDv5Encoding,
+): string | Buffer {
+	if (bun) {
+		const bunName = typeof name === "string" ? name : nonSharedBytes(name);
+		const bunNamespace = typeof namespace === "string" ? namespace : nonSharedBytes(namespace);
+		if (encoding === "buffer") return bun.randomUUIDv5(bunName, bunNamespace, "buffer");
+		return bun.randomUUIDv5(bunName, bunNamespace, encoding);
+	}
+	if (encoding === "buffer") return nodeRandomUUIDv5(name, namespace, "buffer");
+	return nodeRandomUUIDv5(name, namespace, encoding);
+}
+
 interface RuntimeHash {
 	(input: HashInput, seed?: number | bigint): number | bigint;
 	wyhash(input: HashInput, seed?: number | bigint): bigint;
@@ -198,6 +220,10 @@ export const runtime = {
 	hash,
 	CryptoHasher: (bun?.CryptoHasher ?? NodeCryptoHasher) as unknown as typeof NodeCryptoHasher,
 	SHA256: (bun?.SHA256 ?? NodeSHA256) as unknown as typeof NodeSHA256,
+	randomUUIDv5: randomUUIDv5 as {
+		(name: UUIDv5Input, namespace: UUIDv5Namespace, encoding?: "hex" | "base64" | "base64url"): string;
+		(name: UUIDv5Input, namespace: UUIDv5Namespace, encoding: "buffer"): Buffer;
+	},
 	randomUUIDv7: randomUUIDv7 as {
 		(encoding?: "hex" | "base64" | "base64url", timestamp?: number): string;
 		(encoding: "buffer", timestamp?: number): Buffer;

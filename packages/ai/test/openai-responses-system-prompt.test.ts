@@ -135,5 +135,47 @@ describe("openai-responses system prompt routing", () => {
 			const input = body.input as Array<{ role: string }>;
 			expect(input.every(m => m.role !== "developer" && m.role !== "system")).toBe(true);
 		});
+
+		// GPT-6.2+ bills `instructions` at the full input rate every turn (openai/codex#62312).
+		it("sends GPT-6.2 system prompts as input[role=developer] on a non-official endpoint", async () => {
+			for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"] as const) {
+				const model = getBundledModel("openai", id) as Model<"openai-responses">;
+				const proxyModel: Model<"openai-responses"> = buildModel({
+					...model,
+					baseUrl: "https://proxy.example.com/v1",
+					compat: model.compatConfig,
+				} as ModelSpec<"openai-responses">);
+				const context: Context = {
+					systemPrompt: ["First.", "Second."],
+					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+				};
+				const body = await captureRequestBody(proxyModel, context);
+
+				expect(body.instructions).toBeUndefined();
+				const input = body.input as Array<{ role: string; content: string }>;
+				expect(input.slice(0, 2)).toEqual([
+					{ role: "developer", content: "First." },
+					{ role: "developer", content: "Second." },
+				]);
+			}
+		});
+
+		it("applies uncached-instructions to future GPT-6.3+ revisions while excluding collapsed ids like gpt-52-codex", () => {
+			const futureModel = buildModel({
+				...o4MiniModel,
+				id: "gpt-6.3-sol",
+				baseUrl: "https://proxy.example.com/v1",
+				compat: undefined,
+			} as ModelSpec<"openai-responses">);
+			expect(futureModel.compat.uncachedInstructions).toBe(true);
+
+			const collapsedModel = buildModel({
+				...o4MiniModel,
+				id: "gpt-52-codex",
+				baseUrl: "https://proxy.example.com/v1",
+				compat: undefined,
+			} as ModelSpec<"openai-responses">);
+			expect(collapsedModel.compat.uncachedInstructions).toBe(false);
+		});
 	});
 });
