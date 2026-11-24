@@ -1297,7 +1297,8 @@ export class SessionTools {
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		const allowed = this.#allowedToolNames;
-		if (allowed && toolNames.some(name => !Object.hasOwn(allowed, name))) throw new Error("Sandbox tool grant denied");
+		if (allowed && toolNames.some(name => !Object.hasOwn(allowed, name)))
+			throw new Error("Sandbox tool grant denied");
 		toolNames = normalizeToolNames(toolNames);
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		const fullWriteSelected =

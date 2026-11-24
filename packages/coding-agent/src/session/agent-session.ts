@@ -2515,11 +2515,16 @@ export class AgentSession implements SettingsScope {
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			toolRegistry: config.toolRegistry,
-			allowedToolNames: this.sandbox ? { sandbox_read: true, sandbox_write: true, sandbox_list: true,
-				...(this.sandbox.javascript ? { sandbox_js: true } : {}),
-				...(this.sandbox.network === "public" ? { sandbox_fetch: true } : {}),
-				...(this.sandbox.imageGeneration ? { generate_image: true } : {}),
-			} : undefined,
+			allowedToolNames: this.sandbox
+				? {
+						sandbox_read: true,
+						sandbox_write: true,
+						sandbox_list: true,
+						...(this.sandbox.javascript ? { sandbox_js: true } : {}),
+						...(this.sandbox.network === "public" ? { sandbox_fetch: true } : {}),
+						...(this.sandbox.imageGeneration ? { generate_image: true } : {}),
+					}
+				: undefined,
 			createVibeTools: config.createVibeTools,
 			createThinkTool: config.createThinkTool,
 			builtInToolNames: config.builtInToolNames,
@@ -5784,7 +5789,8 @@ export class AgentSession implements SettingsScope {
 		) {
 			return {
 				block: true,
-				reason: "Wait for the clarification answer. Update the plan to reflect it before submitting a new proposal.",
+				reason:
+					"Wait for the clarification answer. Update the plan to reflect it before submitting a new proposal.",
 			};
 		}
 		const runner = this.#extensionRunner;
@@ -8484,7 +8490,8 @@ export class AgentSession implements SettingsScope {
 
 		// Expand file-based prompt templates if requested
 		const templated = expandPromptTemplates ? expandPromptTemplate(text, [...this.#promptTemplates]) : text;
-		const expandedText = options?.synthetic || this.sandbox ? templated : this.#modelMentions.expandMentions(templated);
+		const expandedText =
+			options?.synthetic || this.sandbox ? templated : this.#modelMentions.expandMentions(templated);
 
 		// Magic keywords (see modes/magic-keywords.ts): append hidden system notices after the
 		// user's message that steer this turn. User-authored prompts only — synthetic /
@@ -8887,10 +8894,11 @@ export class AgentSession implements SettingsScope {
 		const promptText = text.join("\n\n");
 		const preparationImages = images.length > 0 ? images : undefined;
 		// Steering amends the running task; only a follow-up starts a new one worth routing.
-		if (queue === "followUp" && userMessages.some(message => this.#isAutoPrewalkTask(message))) {
-			return this.#prepareQueuedAutoPrewalkTask(first, promptText, preparationImages, signal);
-		}
-		return this.#prepareAgentStart(first, promptText, preparationImages, this.#promptGeneration, signal, "queued");
+		return (
+			queue === "followUp" && userMessages.some(message => this.#isAutoPrewalkTask(message))
+				? this.#prepareQueuedAutoPrewalkTask(first, promptText, preparationImages, signal)
+				: this.#prepareAgentStart(first, promptText, preparationImages, this.#promptGeneration, signal, "queued")
+		);
 	};
 
 	/**
@@ -13425,7 +13433,8 @@ export class AgentSession implements SettingsScope {
 			onModelFallback?: (warning: string) => void;
 		},
 	): Promise<boolean> {
-		if (this.sandbox) throw new Error("Sandbox session switching denied; resume through the host with the persisted boundary");
+		if (this.sandbox)
+			throw new Error("Sandbox session switching denied; resume through the host with the persisted boundary");
 		const explicitModel = options?.model;
 		if (explicitModel && !this.#modelRegistry.hasConfiguredAuth(explicitModel)) {
 			throw new Error(`No API key for ${explicitModel.provider}/${explicitModel.id}`);

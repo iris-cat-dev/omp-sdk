@@ -308,7 +308,11 @@ export async function runRpcSkillCommand(
 			details: built.details,
 			attribution: "user",
 		},
-		{ streamingBehavior, queueChipText: invocation.queueChipText, onPromptAdmitted },
+		{
+			streamingBehavior,
+			queueChipText: invocation.queueChipText,
+			onPromptAdmitted,
+		},
 	);
 }
 
@@ -2028,11 +2032,15 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			if (!isCurrent()) return "cancelled";
 			if (!text.trim() && !images?.length) return "local";
 			if (command.type === "steer") {
-				await session.steer(text, images, { clientMessageId: command.clientMessageId });
+				await session.steer(text, images, {
+					clientMessageId: command.clientMessageId,
+				});
 				return "admitted";
 			}
 			if (command.type === "follow_up") {
-				await session.followUp(text, images, { clientMessageId: command.clientMessageId });
+				await session.followUp(text, images, {
+					clientMessageId: command.clientMessageId,
+				});
 				return "admitted";
 			}
 			if (!session.sandbox && command.type === "prompt") {

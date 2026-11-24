@@ -234,118 +234,120 @@ async function buildToolResult(
 	};
 }
 
-export function createImageGenTool<TDetails>(buildResult: (model: Model, result: ImageGenerationResult) => Promise<AgentToolResult<TDetails, ImageGenParams>>): CustomTool<typeof imageGenSchema, TDetails> {
+export function createImageGenTool<TDetails>(
+	buildResult: (model: Model, result: ImageGenerationResult) => Promise<AgentToolResult<TDetails, ImageGenParams>>,
+): CustomTool<typeof imageGenSchema, TDetails> {
 	return {
-	name: "generate_image",
-	label: "GenerateImage",
-	strict: false,
-	approval: "write",
-	description: prompt.render(imageGenDescription),
-	parameters: imageGenSchema,
-	async execute(_toolCallId, params, _onUpdate, ctx, signal) {
-		return untilAborted(signal, async () => {
-			const sessionId = ctx.sessionManager.getSessionId();
-			const requestSignal = ptree.combineSignals(signal, IMAGE_TIMEOUT);
-			const effectiveSettings = ctx.settings ?? settings;
-			const pool = roleCandidatePool("image", effectiveSettings, ctx.modelRegistry);
-			let candidates: Model[];
-			if (params.model) {
-				const selected = resolveModelRoleValue(params.model, pool, { settings: effectiveSettings }).model;
-				if (!selected)
-					throw new Error(`Image model selector did not match an available image model: ${params.model}`);
-				candidates = [selected];
-			} else {
-				candidates = defaultImageCandidates(resolveRoleChain("image", effectiveSettings, pool), ctx.model, pool);
-			}
-
-			const failures: ProviderHttpError[] = [];
-			const skipped: string[] = [];
-			let inputImages: ImageGenerationRequest["inputImages"];
-			for (const model of candidates) {
-				if (!isImageGenerationApi(model.api)) {
-					logger.warn("Skipping unsupported image model API", {
-						provider: model.provider,
-						model: model.id,
-						api: model.api,
-					});
-					skipped.push(`${model.provider}/${model.id} (unsupported ${model.api})`);
-					continue;
+		name: "generate_image",
+		label: "GenerateImage",
+		strict: false,
+		approval: "write",
+		description: prompt.render(imageGenDescription),
+		parameters: imageGenSchema,
+		async execute(_toolCallId, params, _onUpdate, ctx, signal) {
+			return untilAborted(signal, async () => {
+				const sessionId = ctx.sessionManager.getSessionId();
+				const requestSignal = ptree.combineSignals(signal, IMAGE_TIMEOUT);
+				const effectiveSettings = ctx.settings ?? settings;
+				const pool = roleCandidatePool("image", effectiveSettings, ctx.modelRegistry);
+				let candidates: Model[];
+				if (params.model) {
+					const selected = resolveModelRoleValue(params.model, pool, { settings: effectiveSettings }).model;
+					if (!selected)
+						throw new Error(`Image model selector did not match an available image model: ${params.model}`);
+					candidates = [selected];
+				} else {
+					candidates = defaultImageCandidates(resolveRoleChain("image", effectiveSettings, pool), ctx.model, pool);
 				}
 
-				const initialKey = await ctx.modelRegistry.getApiKey(model, sessionId, { signal: requestSignal });
-				if (!isAuthenticated(initialKey)) {
-					skipped.push(`${model.provider}/${model.id} (credentials unavailable)`);
-					continue;
-				}
-				if (model.api === "google-gemini-cli" && !parseAntigravityCredentials(initialKey)) {
-					skipped.push(`${model.provider}/${model.id} (invalid credentials)`);
-					continue;
-				}
-
-				let carrier: Model | undefined;
-				let apiKey = ctx.modelRegistry.resolver(model, sessionId);
-				if (model.api === "openai-responses" || model.api === "openai-codex-responses") {
-					carrier = model.hostedImage ? model : resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
-					if (!carrier) {
-						skipped.push(`${model.provider}/${model.id} (hosted chat carrier unavailable)`);
+				const failures: ProviderHttpError[] = [];
+				const skipped: string[] = [];
+				let inputImages: ImageGenerationRequest["inputImages"];
+				for (const model of candidates) {
+					if (!isImageGenerationApi(model.api)) {
+						logger.warn("Skipping unsupported image model API", {
+							provider: model.provider,
+							model: model.id,
+							api: model.api,
+						});
+						skipped.push(`${model.provider}/${model.id} (unsupported ${model.api})`);
 						continue;
 					}
-					const carrierKey = await ctx.modelRegistry.getApiKey(carrier, sessionId, { signal: requestSignal });
-					if (!isAuthenticated(carrierKey)) {
-						skipped.push(`${model.provider}/${model.id} (carrier credentials unavailable)`);
+
+					const initialKey = await ctx.modelRegistry.getApiKey(model, sessionId, { signal: requestSignal });
+					if (!isAuthenticated(initialKey)) {
+						skipped.push(`${model.provider}/${model.id} (credentials unavailable)`);
 						continue;
 					}
-					apiKey = ctx.modelRegistry.resolver(carrier, sessionId);
-				}
-
-				if (!inputImages) {
-					inputImages = [];
-					for (const input of params.input ?? []) {
-						inputImages.push(await resolveInputImage(input, ctx.sessionManager.getCwd()));
+					if (model.api === "google-gemini-cli" && !parseAntigravityCredentials(initialKey)) {
+						skipped.push(`${model.provider}/${model.id} (invalid credentials)`);
+						continue;
 					}
-				}
-				const request: ImageGenerationRequest = {
-					prompt: assemblePrompt(params),
-					inputImages,
-					aspectRatio: params.aspect_ratio,
-					imageSize: params.image_size,
-					count: 1,
-				};
-				const resolvedModel = {
-					...model,
-					resolveHeaders: (headerSignal?: AbortSignal) =>
-						ctx.modelRegistry.resolveModelHeaders(model, headerSignal),
-				};
-				const resolvedCarrier = carrier
-					? {
-							...carrier,
-							resolveHeaders: (headerSignal?: AbortSignal) =>
-								ctx.modelRegistry.resolveModelHeaders(carrier, headerSignal),
+
+					let carrier: Model | undefined;
+					let apiKey = ctx.modelRegistry.resolver(model, sessionId);
+					if (model.api === "openai-responses" || model.api === "openai-codex-responses") {
+						carrier = model.hostedImage ? model : resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
+						if (!carrier) {
+							skipped.push(`${model.provider}/${model.id} (hosted chat carrier unavailable)`);
+							continue;
 						}
-					: undefined;
-				try {
-					const result = await generateImage(resolvedModel, request, {
-						apiKey,
-						fetch: ctx.fetch ?? fetch,
-						signal: requestSignal,
-						carrier: resolvedCarrier,
-						sessionId,
-					});
-					return buildResult(model, result);
-				} catch (error) {
-					if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) throw error;
-					failures.push(error);
-				}
-			}
+						const carrierKey = await ctx.modelRegistry.getApiKey(carrier, sessionId, { signal: requestSignal });
+						if (!isAuthenticated(carrierKey)) {
+							skipped.push(`${model.provider}/${model.id} (carrier credentials unavailable)`);
+							continue;
+						}
+						apiKey = ctx.modelRegistry.resolver(carrier, sessionId);
+					}
 
-			const attempted = candidates.map(model => `${model.provider}/${model.id}`).join(", ");
-			const suffix = skipped.length > 0 ? ` Skipped: ${skipped.join(", ")}.` : "";
-			throw new AggregateError(
-				failures,
-				`Image generation exhausted the resolved image chain${attempted ? `: ${attempted}` : "."}${suffix}`,
-			);
-		});
-	},
+					if (!inputImages) {
+						inputImages = [];
+						for (const input of params.input ?? []) {
+							inputImages.push(await resolveInputImage(input, ctx.sessionManager.getCwd()));
+						}
+					}
+					const request: ImageGenerationRequest = {
+						prompt: assemblePrompt(params),
+						inputImages,
+						aspectRatio: params.aspect_ratio,
+						imageSize: params.image_size,
+						count: 1,
+					};
+					const resolvedModel = {
+						...model,
+						resolveHeaders: (headerSignal?: AbortSignal) =>
+							ctx.modelRegistry.resolveModelHeaders(model, headerSignal),
+					};
+					const resolvedCarrier = carrier
+						? {
+								...carrier,
+								resolveHeaders: (headerSignal?: AbortSignal) =>
+									ctx.modelRegistry.resolveModelHeaders(carrier, headerSignal),
+							}
+						: undefined;
+					try {
+						const result = await generateImage(resolvedModel, request, {
+							apiKey,
+							fetch: ctx.fetch ?? fetch,
+							signal: requestSignal,
+							carrier: resolvedCarrier,
+							sessionId,
+						});
+						return buildResult(model, result);
+					} catch (error) {
+						if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) throw error;
+						failures.push(error);
+					}
+				}
+
+				const attempted = candidates.map(model => `${model.provider}/${model.id}`).join(", ");
+				const suffix = skipped.length > 0 ? ` Skipped: ${skipped.join(", ")}.` : "";
+				throw new AggregateError(
+					failures,
+					`Image generation exhausted the resolved image chain${attempted ? `: ${attempted}` : "."}${suffix}`,
+				);
+			});
+		},
 	};
 }
 export const imageGenTool = createImageGenTool(buildToolResult);

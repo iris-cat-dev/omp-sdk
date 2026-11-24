@@ -89,14 +89,20 @@ describe("AgentSession queued steer delivery", () => {
 		const mock = createMockModel({ responses });
 		const agent = new Agent({
 			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			initialState: { model, systemPrompt: ["Test"] },
 			convertToLlm,
 			streamFn: mock.stream,
 		});
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.enabled": false });
 
-		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, promptTemplates });
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+			promptTemplates,
+		});
 		return { session, sessionManager, mock };
 	}
 

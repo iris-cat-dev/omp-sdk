@@ -101,12 +101,30 @@ export type RpcCommand =
 			streamingBehavior?: "steer" | "followUp";
 			clientMessageId?: string;
 	  }
-	| { id?: string; type: "steer"; message: string; images?: ImageContent[]; clientMessageId?: string }
-	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[]; clientMessageId?: string }
+	| {
+			id?: string;
+			type: "steer";
+			message: string;
+			images?: ImageContent[];
+			clientMessageId?: string;
+	  }
+	| {
+			id?: string;
+			type: "follow_up";
+			message: string;
+			images?: ImageContent[];
+			clientMessageId?: string;
+	  }
 	| { id?: string; type: "remove_queued_message"; message: string; queue: "steering" | "followUp" }
 	| { id?: string; type: "promote_queued_message"; message: string }
 	| { id?: string; type: "abort" }
-	| { id?: string; type: "abort_and_prompt"; message: string; images?: ImageContent[]; clientMessageId?: string }
+	| {
+			id?: string;
+			type: "abort_and_prompt";
+			message: string;
+			images?: ImageContent[];
+			clientMessageId?: string;
+	  }
 	| { id?: string; type: "abort_and_restore_queue" }
 	| { id?: string; type: "new_session"; parentSession?: string }
 	| { id?: string; type: "open_session"; sessionDir: string; provider?: string; modelId?: string }
