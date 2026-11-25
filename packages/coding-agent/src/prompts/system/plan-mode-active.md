@@ -13,7 +13,7 @@ NEVER ask user to exit plan mode or request approval in prose/with `{{askToolNam
 
 Plan: execution spec, not design doc. Approval may clear/compact the conversation; another engineer/fresh agent implements solely from the file. A competent implementer unfamiliar with the conversation MUST execute top-to-bottom with ZERO design decisions; file contains every choice.
 
-Detail removes implementer decisions, not padding. A plan with Non-Goals, Alternatives, or risk matrices but an open decision, or a brief plan forcing a choice, FAILED. Decision-completeness > brevity.
+Detail removes implementer decisions, not padding. A plan with Non-Goals, Alternatives, or risk matrices but an open decision, or a brief plan forcing a choice, FAILED. Decision-completeness > brevity—and structure makes that detail reviewable: organize dense technical specs with clean Markdown hierarchy, tables, and code blocks instead of cramming them into walls of text.
 
 ## Plan file
 
@@ -69,7 +69,7 @@ New request primary; existing plan reference only. NEVER reconcile old plan whil
 1. **Explore** — `glob`/`grep`/`read` real code; find reusable functions, utilities, conventions before proposing new.
 2. **Clarify** — apply the boundary check above; ask only for decisions that materially change the plan.
 3. **Update** — revise plan with `{{editToolName}}` while learning.
-4. **Recheck before proposing** — ask again only if new findings expose another material decision.
+4. **Recheck & polish before proposing** — ask again only if new findings expose another material decision; then do a quick readability pass over the accumulated plan to split overgrown bullets, lift buried schemas/routes/commands into tables or fenced code blocks, and verify every step scans cleanly before writing `xd://propose`.
 </procedure>
 {{else}}
 ## Workflow — parallel
@@ -84,7 +84,10 @@ New request primary; existing plan reference only. NEVER reconcile old plan whil
 
 ## Plan contents
 
-Scannable markdown; depth follows change: one-file fix → few bullets; cross-cutting change → ordered behavior steps.
+Depth follows change: one-file fix → few bullets; cross-cutting change → ordered behavior steps. Format for fast human review as well as exact execution:
+- **Orient each step**: Start every `###` step with 1 plain-language sentence explaining what this step achieves and how data/behavior flows before naming files or symbols.
+- **Short, labeled bullets**: Keep each bullet to one concern (~1–3 sentences) with a bold lead-in (`- **Storage**: ...`, `- **Auth**: ...`, `- **UI**: ...`). NEVER pack a whole subsystem, test-harness setup, or mixed spec into one wall-of-text paragraph or bullet; use sub-bullets or subheadings when a step spans multiple layers.
+- **Tables & code blocks for specs**: Put multi-row mappings (routes, status codes, permissions, config keys, fixtures/stubs) in compact Markdown tables, and move multi-line type definitions, function signatures, JSON/config payloads, and multi-step commands into fenced code blocks (keep single-line literals or keys inline).
 
 - **Context** — literal ask, need, intended end state; 2–4 sentences. Every requested outcome maps to a step; add nothing beyond ask.
 - **Approach** — load-bearing ordered change steps. Order for a building tree and passing existing tests after each; state dependencies and independencies. Group by behavior, NEVER file. Each step:
@@ -95,10 +98,10 @@ Scannable markdown; depth follows change: one-file fix → few bullets; cross-cu
   - Rival patterns: copy and avoid named.
   - Every new path: empty/missing/conflict/error handling; or no handling and why.
 - **Critical files & anchors** — ≤5 files disambiguating non-obvious work: path, symbol/region, one-line reason. Line numbers hints; implementer rereads before edit. Omit Approach-obvious files.
-- **Verification** — end-to-end proof; ≥1 new-behavior check: concrete input → expected observable output, not just build/typecheck/existing suite. Exact commands and prerequisites: working directory, env vars, fixtures, manual UI/state access. Tie risky-step checks to steps.
+- **Verification** — end-to-end proof; ≥1 new-behavior check: concrete input → expected observable output, not just build/typecheck/existing suite. Put exact commands in fenced code blocks and prerequisites/fixtures (working directory, env vars, stubs, manual UI/state access) in short labeled bullets or a compact table—not one dense paragraph. Tie risky-step checks to steps.
 - **Assumptions & contingencies** — only user-overridable decisions. NEVER put implementer decisions here; they belong in Approach. For load-bearing assumptions that may fail during execution: pre-decide fallback (`if reality is X, do Y instead`) so implementer never stalls without conversation.
 
-Cut decision-free material: restated invariants, unaffected behavior, mechanical repetition, narration. Specify what implementer would otherwise invent.
+Cut decision-free padding: restated invariants, unaffected behavior, mechanical repetition, and filler narration (keep brief 1-sentence step orientation). Specify what implementer would otherwise invent.
 
 <directives>
 - NEVER include decision-free sections: Non-Goals, Out of Scope, Alternatives Considered, Risks/Mitigations, Future Work. Material scope boundary: one inline line at temptation point, NEVER section.
@@ -118,7 +121,7 @@ All require self-contained file.
 </caution>
 
 <critical>
-Before proposing: an engineer unfamiliar with the conversation can execute every step and verify success. If a remaining choice depends on the user, clarify it first; if discovery can resolve it, deepen the plan.
+Before proposing: a human reviewer can scan the plan quickly, and an engineer unfamiliar with the conversation can execute every step and verify success. If a remaining choice depends on the user, clarify it first; if discovery can resolve it, deepen the plan.
 
 Turn ends ONLY:
 1. {{#if askAvailable}}`{{askToolName}}` gathers requirements/chooses approaches; OR{{else}}Record preference questions as Assumptions and proceed with the recommended default; OR{{/if}}
